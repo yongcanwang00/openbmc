@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <libgen.h>
@@ -43,7 +44,7 @@ const char *kv_store    = "/mnt/data/kv_store/%s";
 #define KV_DEBUG(fmt, ...)
 #endif
 
-void mkdir_recurse(char *dir, mode_t mode)
+static void mkdir_recurse(char *dir, mode_t mode)
 {
   if (access(dir, F_OK) == -1) {
     char curr[MAX_KEY_PATH_LEN];
@@ -55,7 +56,7 @@ void mkdir_recurse(char *dir, mode_t mode)
   }
 }
 
-void key_path_setup(char *kpath, char *key, unsigned int flags)
+static void key_path_setup(char *kpath, const char *key, unsigned int flags)
 {
   char path[MAX_KEY_PATH_LEN];
   /* Create the path if they dont already exist */
@@ -77,10 +78,17 @@ void key_path_setup(char *kpath, char *key, unsigned int flags)
 *  return 0 on success, negative error code on failure.
 */
 int
-kv_set(char *key, char *value, size_t len, unsigned int flags) {
+kv_set(const char *key, const char *value, size_t len, unsigned int flags) {
   FILE *fp;
   int rc, ret = -1;
   char kpath[MAX_KEY_PATH_LEN] = {0};
+  bool present = true;
+  char curr_value[MAX_VALUE_LEN] = {0};
+
+  if (key == NULL || value == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
 
   key_path_setup(kpath, key, flags);
 
@@ -97,8 +105,10 @@ kv_set(char *key, char *value, size_t len, unsigned int flags) {
   }
 
   fp = fopen(kpath, "r+");
-  if (!fp && (errno == ENOENT))
+  if (!fp && (errno == ENOENT)) {
     fp = fopen(kpath, "w");
+    present = false;
+  }
   if (!fp) {
     KV_DEBUG("kv_set: failed to open %s %d", kpath, errno);
     return -1;
@@ -108,6 +118,17 @@ kv_set(char *key, char *value, size_t len, unsigned int flags) {
   if (rc < 0) {
     KV_DEBUG("kv_set: failed to flock on %s, err %d", kpath, errno);
     goto close_bail;
+  }
+
+  // Check if we are writing the same value. If so, exit early
+  // to save on number of times flash is updated.
+  if (present && (flags && KV_FPERSIST)) {
+    rc = (int)fread(curr_value, 1, MAX_VALUE_LEN, fp);
+    if (len == rc && !memcmp(value, curr_value, len)) {
+      ret = 0;
+      goto unlock_bail;
+    }
+    fseek(fp, 0, SEEK_SET);
   }
 
   if (ftruncate(fileno(fp), 0) < 0) {  //truncate cache file after getting flock
@@ -147,10 +168,15 @@ close_bail:
 *  return 0 on success, negative error code on failure.
 */
 int
-kv_get(char *key, char *value, size_t *len, unsigned int flags) {
+kv_get(const char *key, char *value, size_t *len, unsigned int flags) {
   FILE *fp;
   int rc, ret=-1;
   char kpath[MAX_KEY_PATH_LEN] = {0};
+
+  if (key == NULL || value == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
 
   key_path_setup(kpath, key, flags);
 

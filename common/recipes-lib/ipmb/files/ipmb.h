@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define SOCK_PATH_IPMB "/tmp/ipmb_socket"
+#define SOCK_PATH_IPMB "ipmb_socket"
 
 #define BMC_SLAVE_ADDR 0x10
 #define BRIDGE_SLAVE_ADDR 0x20
@@ -43,7 +43,9 @@ extern "C" {
 // TODO: Some IPMB responses take about 5-6 seconds
 // Need to add a timeout parameter to IPMB request
 // For now changing global timeout to 8 seconds
-#define TIMEOUT_IPMB 8
+#if !defined(TIMEOUT_IPMB)
+  #define TIMEOUT_IPMB 8
+#endif
 #define MIN_IPMB_REQ_LEN 7
 #define MAX_IPMB_RES_LEN 300
 #define MIN_IPMB_RES_LEN 8
@@ -69,9 +71,9 @@ typedef struct _ipmb_res_t {
   uint8_t data[];
 } ipmb_res_t;
 
-void lib_ipmb_handle(unsigned char bus_id,
-                  unsigned char *request, unsigned short req_len,
-                  unsigned char *response, unsigned char *res_len);
+int lib_ipmb_handle(unsigned char bus_id,
+                    unsigned char *request, unsigned short req_len,
+                    unsigned char *response, unsigned char *res_len);
 
 /*
  * ipmb_send():

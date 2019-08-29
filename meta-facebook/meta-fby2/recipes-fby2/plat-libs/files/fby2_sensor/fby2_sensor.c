@@ -25,12 +25,14 @@
 #include <stdbool.h>
 #include <math.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <syslog.h>
 #include <unistd.h>
 #include <time.h>
 #include <openbmc/obmc-i2c.h>
+#include <openbmc/obmc-sensor.h>
 #include "fby2_sensor.h"
 #include <openbmc/nvme-mi.h>
 
@@ -40,17 +42,14 @@
 #define GPIO_VAL "/sys/class/gpio/gpio%d/value"
 
 #define I2C_BUS_1_DIR "/sys/class/i2c-adapter/i2c-1/"
-#define I2C_BUS_3_DIR "/sys/class/i2c-adapter/i2c-3/"
 #define I2C_BUS_5_DIR "/sys/class/i2c-adapter/i2c-5/"
 #define I2C_BUS_9_DIR "/sys/class/i2c-adapter/i2c-9/"
-#define I2C_BUS_10_DIR "/sys/class/i2c-adapter/i2c-10/"
 
 #define TACH_DIR "/sys/devices/platform/ast_pwm_tacho.0"
 #define ADC_DIR "/sys/devices/platform/ast_adc.0"
 
 #define SP_INLET_TEMP_DEVICE I2C_BUS_9_DIR "9-004e/hwmon/hwmon*"
 #define SP_OUTLET_TEMP_DEVICE I2C_BUS_9_DIR "9-004f/hwmon/hwmon*"
-#define HSC_DEVICE I2C_BUS_10_DIR "10-0040/hwmon/hwmon*"
 
 #define DC_SLOT1_INLET_TEMP_DEVICE I2C_BUS_1_DIR "1-004d/hwmon/hwmon*"
 #define DC_SLOT1_OUTLET_TEMP_DEVICE I2C_BUS_1_DIR "1-004e/hwmon/hwmon*"
@@ -58,13 +57,8 @@
 #define DC_SLOT3_INLET_TEMP_DEVICE I2C_BUS_5_DIR "5-004d/hwmon/hwmon*"
 #define DC_SLOT3_OUTLET_TEMP_DEVICE I2C_BUS_5_DIR "5-004e/hwmon/hwmon*"
 
-#define HSC_DEVICE I2C_BUS_10_DIR "10-0040/hwmon/hwmon*"
 #define FAN_TACH_RPM "tacho%d_rpm"
 #define ADC_VALUE "adc%d_value"
-#define HSC_IN_VOLT "in1_input"
-#define HSC_OUT_CURR "curr1_input"
-#define HSC_TEMP "temp1_input"
-#define HSC_IN_POWER "power1_input"
 
 #define UNIT_DIV 1000
 
@@ -80,6 +74,7 @@
 #define EIN_SAMPLE_CNT 0x1000000
 #define EIN_ENERGY_CNT 0x800000
 #define PIN_COEF (0.0163318634656214)  // X = 1/m * (Y * 10^(-R) - b) = 1/6123 * (Y * 100)
+#define ADM1278_R_SENSE 0.3
 
 #define I2C_DEV_NIC "/dev/i2c-11"
 #define I2C_NIC_ADDR 0x3e  // 8-bit
@@ -92,15 +87,16 @@
 #define LAST_REC_ID 0xFFFF
 
 #define FBY2_SDR_PATH "/tmp/sdr_%s.bin"
-#define SLOT_FILE "/tmp/slot.bin"
-#define ML_ADM1278_R_SENSE  0.3
 
 #define TOTAL_M2_CH_ON_GP 6
 #define MAX_POS_READING_MARGIN 127
 
-#define SYS_CONFIG_PATH "/mnt/data/kv_store/sys_config/"
+static float hsc_r_sense = ADM1278_R_SENSE;
 
-static float ml_hsc_r_sense = ML_ADM1278_R_SENSE;
+/* Error codes returned */
+#define ERR_UNKNOWN_FRU -1
+#define ERR_SENSOR_NA   -2
+#define ERR_FAILURE     -3
 
 // List of BIC sensors which need to do negative reading handle
 const uint8_t bic_neg_reading_sensor_support_list[] = {
@@ -128,6 +124,53 @@ const uint8_t bic_neg_reading_sensor_support_list[] = {
   BIC_SENSOR_VCCSA_VR_CURR,
   BIC_SENSOR_VNN_PCH_VR_CURR,
 };
+
+#ifdef CONFIG_FBY2_GPV2
+const uint8_t bic_gpv2_neg_reading_sensor_support_list[] = {
+  GPV2_SENSOR_INLET_TEMP,
+  GPV2_SENSOR_OUTLET_TEMP,
+  GPV2_SENSOR_PCIE_SW_TEMP,
+  // VR
+  GPV2_SENSOR_3V3_VR_Temp,
+  GPV2_SENSOR_0V92_VR_Temp,
+  //M.2 0
+  GPV2_SENSOR_DEV0_Temp,
+  GPV2_SENSOR_DEV0_Ambient_Temp,
+  //M.2 1
+  GPV2_SENSOR_DEV1_Temp,
+  GPV2_SENSOR_DEV1_Ambient_Temp,
+  //M.2 2
+  GPV2_SENSOR_DEV2_Temp,
+  GPV2_SENSOR_DEV2_Ambient_Temp,
+  //M.2 3
+  GPV2_SENSOR_DEV3_Temp,
+  GPV2_SENSOR_DEV3_Ambient_Temp,
+  //M.2 4
+  GPV2_SENSOR_DEV4_Temp,
+  GPV2_SENSOR_DEV4_Ambient_Temp,
+  //M.2 5
+  GPV2_SENSOR_DEV5_Temp,
+  GPV2_SENSOR_DEV5_Ambient_Temp,
+  //M.2 6
+  GPV2_SENSOR_DEV6_Temp,
+  GPV2_SENSOR_DEV6_Ambient_Temp,
+  //M.2 7
+  GPV2_SENSOR_DEV7_Temp,
+  GPV2_SENSOR_DEV7_Ambient_Temp,
+  //M.2 8
+  GPV2_SENSOR_DEV8_Temp,
+  GPV2_SENSOR_DEV8_Ambient_Temp,
+  //M.2 9
+  GPV2_SENSOR_DEV9_Temp,
+  GPV2_SENSOR_DEV9_Ambient_Temp,
+  //M.2 10
+  GPV2_SENSOR_DEV10_Temp,
+  GPV2_SENSOR_DEV10_Ambient_Temp,
+  //M.2 11
+  GPV2_SENSOR_DEV11_Temp,
+  GPV2_SENSOR_DEV11_Ambient_Temp,
+};
+#endif
 
 const uint8_t bic_sdr_accuracy_sensor_support_list[] = {
   BIC_SENSOR_VCCIN_VR_POUT,
@@ -324,6 +367,38 @@ const uint8_t spb_sensor_list[] = {
   SP_SENSOR_HSC_OUT_CURR,
   SP_SENSOR_HSC_TEMP,
   SP_SENSOR_HSC_IN_POWER,
+  SP_SENSOR_HSC_PEAK_IOUT,
+  SP_SENSOR_HSC_PEAK_PIN,
+};
+
+// List of SPB sensors to be monitored (YV2.50 Dual FAN)
+const uint8_t spb_sensor_dual_r_fan_list[] = {
+  SP_SENSOR_INLET_TEMP,
+  SP_SENSOR_OUTLET_TEMP,
+  //SP_SENSOR_MEZZ_TEMP
+  SP_SENSOR_FAN0_TACH,
+  SP_SENSOR_FAN2_TACH,
+  SP_SENSOR_FAN1_TACH,
+  SP_SENSOR_FAN3_TACH,
+  //SP_SENSOR_AIR_FLOW,
+  SP_SENSOR_P5V,
+  SP_SENSOR_P12V,
+  SP_SENSOR_P3V3_STBY,
+  SP_SENSOR_P12V_SLOT1,
+  SP_SENSOR_P12V_SLOT2,
+  SP_SENSOR_P12V_SLOT3,
+  SP_SENSOR_P12V_SLOT4,
+  SP_SENSOR_P3V3,
+  SP_SENSOR_P1V15_BMC_STBY,
+  SP_SENSOR_P1V2_BMC_STBY,
+  SP_SENSOR_P2V5_BMC_STBY,
+  SP_P1V8_STBY,
+  SP_SENSOR_HSC_IN_VOLT,
+  SP_SENSOR_HSC_OUT_CURR,
+  SP_SENSOR_HSC_TEMP,
+  SP_SENSOR_HSC_IN_POWER,
+  SP_SENSOR_HSC_PEAK_IOUT,
+  SP_SENSOR_HSC_PEAK_PIN,
 };
 
 const uint8_t dc_sensor_list[] = {
@@ -350,28 +425,264 @@ const uint8_t dc_cf_sensor_list[] = {
 // List of NIC sensors to be monitored
 const uint8_t nic_sensor_list[] = {
   MEZZ_SENSOR_TEMP,
+
+  // PLDM numeric sensors
+  NIC_SOC_TEMP,
+  PORT_0_TEMP,
+  PORT_0_LINK_SPEED,
+
+  // PLDM state sensors
+  NIC_HEALTH_STATE,
+  PORT_0_LINK_STATE,
 };
+
+#ifdef CONFIG_FBY2_GPV2
+const uint8_t gpv2_sensor_list[] = {
+  GPV2_SENSOR_INLET_TEMP,
+  GPV2_SENSOR_OUTLET_TEMP,
+  GPV2_SENSOR_P12V_BIC_SCALED,
+  GPV2_SENSOR_P3V3_STBY_BIC_SCALED,
+  GPV2_SENSOR_P0V92_BIC_SCALED,
+  GPV2_SENSOR_P1V8_BIC_SCALED,
+  GPV2_SENSOR_INA230_POWER,
+  GPV2_SENSOR_INA230_VOLT,
+  GPV2_SENSOR_PCIE_SW_TEMP,
+  // VR
+  GPV2_SENSOR_3V3_VR_Vol,
+  GPV2_SENSOR_0V92_VR_Vol,
+  GPV2_SENSOR_3V3_VR_Curr,
+  GPV2_SENSOR_0V92_VR_Curr,
+  GPV2_SENSOR_3V3_VR_Pwr,
+  GPV2_SENSOR_0V92_VR_Pwr,
+  GPV2_SENSOR_3V3_VR_Temp,
+  GPV2_SENSOR_0V92_VR_Temp,
+  //M.2 0
+  GPV2_SENSOR_DEV0_INA231_PW,
+  GPV2_SENSOR_DEV0_INA231_VOL,
+  GPV2_SENSOR_DEV0_Temp,
+  GPV2_SENSOR_DEV0_Ambient_Temp,
+  //M.2 1
+  GPV2_SENSOR_DEV1_INA231_PW,
+  GPV2_SENSOR_DEV1_INA231_VOL,
+  GPV2_SENSOR_DEV1_Temp,
+  GPV2_SENSOR_DEV1_Ambient_Temp,
+  //M.2 2
+  GPV2_SENSOR_DEV2_INA231_PW,
+  GPV2_SENSOR_DEV2_INA231_VOL,
+  GPV2_SENSOR_DEV2_Temp,
+  GPV2_SENSOR_DEV2_Ambient_Temp,
+  //M.2 3
+  GPV2_SENSOR_DEV3_INA231_PW,
+  GPV2_SENSOR_DEV3_INA231_VOL,
+  GPV2_SENSOR_DEV3_Temp,
+  GPV2_SENSOR_DEV3_Ambient_Temp,
+  //M.2 4
+  GPV2_SENSOR_DEV4_INA231_PW,
+  GPV2_SENSOR_DEV4_INA231_VOL,
+  GPV2_SENSOR_DEV4_Temp,
+  GPV2_SENSOR_DEV4_Ambient_Temp,
+  //M.2 5
+  GPV2_SENSOR_DEV5_INA231_PW,
+  GPV2_SENSOR_DEV5_INA231_VOL,
+  GPV2_SENSOR_DEV5_Temp,
+  GPV2_SENSOR_DEV5_Ambient_Temp,
+  //M.2 6
+  GPV2_SENSOR_DEV6_INA231_PW,
+  GPV2_SENSOR_DEV6_INA231_VOL,
+  GPV2_SENSOR_DEV6_Temp,
+  GPV2_SENSOR_DEV6_Ambient_Temp,
+  //M.2 7
+  GPV2_SENSOR_DEV7_INA231_PW,
+  GPV2_SENSOR_DEV7_INA231_VOL,
+  GPV2_SENSOR_DEV7_Temp,
+  GPV2_SENSOR_DEV7_Ambient_Temp,
+  //M.2 8
+  GPV2_SENSOR_DEV8_INA231_PW,
+  GPV2_SENSOR_DEV8_INA231_VOL,
+  GPV2_SENSOR_DEV8_Temp,
+  GPV2_SENSOR_DEV8_Ambient_Temp,
+  //M.2 9
+  GPV2_SENSOR_DEV9_INA231_PW,
+  GPV2_SENSOR_DEV9_INA231_VOL,
+  GPV2_SENSOR_DEV9_Temp,
+  GPV2_SENSOR_DEV9_Ambient_Temp,
+  //M.2 10
+  GPV2_SENSOR_DEV10_INA231_PW,
+  GPV2_SENSOR_DEV10_INA231_VOL,
+  GPV2_SENSOR_DEV10_Temp,
+  GPV2_SENSOR_DEV10_Ambient_Temp,
+  //M.2 11
+  GPV2_SENSOR_DEV11_INA231_PW,
+  GPV2_SENSOR_DEV11_INA231_VOL,
+  GPV2_SENSOR_DEV11_Temp,
+  GPV2_SENSOR_DEV11_Ambient_Temp,
+};
+#endif
+
+#ifdef CONFIG_FBY2_ND
+// List of BIC (ND) sensors to be monitored
+const uint8_t bic_nd_sensor_list[] = {
+  BIC_ND_SENSOR_MB_OUTLET_TEMP_T,
+  BIC_ND_SENSOR_MB_OUTLET_TEMP_B,
+  BIC_ND_SENSOR_MB_INLET_TEMP,
+  BIC_ND_SENSOR_NVME1_CTEMP,
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_T,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_T,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_T,
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_T,
+  BIC_ND_SENSOR_SOC_CPU0_TEMP,
+  BIC_ND_SENSOR_SOC_DIMMA_TEMP,
+  BIC_ND_SENSOR_SOC_DIMMC_TEMP,
+  BIC_ND_SENSOR_SOC_DIMMD_TEMP,
+  BIC_ND_SENSOR_SOC_DIMME_TEMP,
+  BIC_ND_SENSOR_SOC_DIMMG_TEMP,
+  BIC_ND_SENSOR_SOC_DIMMH_TEMP,
+  BIC_ND_SENSOR_SOC_Package_Pwr,
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_P,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_P,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_P,
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_P,
+  BIC_ND_SENSOR_P3V3_MB,
+  BIC_ND_SENSOR_P12V_STBY_MB,
+  BIC_ND_SENSOR_P1V8_BIC,
+  BIC_ND_SENSOR_P3V3_STBY_MB,
+  BIC_ND_SENSOR_PV_BAT,
+  BIC_ND_SENSOR_PVPP_ABCD,
+  BIC_ND_SENSOR_PVPP_EFGH,
+  BIC_ND_SENSOR_P1V8_STBY_BIC,
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_I,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_I,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_I,
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_I,
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_V,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_V,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_V,
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_V,
+  BIC_ND_SENSOR_INA230_POWER,
+  BIC_ND_SENSOR_INA230_VOLTAGE,
+  BIC_ND_SENSOR_INA260_POWER,
+  BIC_ND_SENSOR_INA260_VOLTAGE,
+};
+
+const uint8_t bic_nd_discrete_list[] = {
+  /* ND Discrete sensors */
+  BIC_ND_SENSOR_SYSTEM_STATUS,
+  BIC_ND_SENSOR_PROCESSOR_FAIL,
+};
+#endif
 
 float spb_sensor_threshold[MAX_SENSOR_NUM][MAX_SENSOR_THRESHOLD + 1] = {0};
 float dc_sensor_threshold[MAX_SENSOR_NUM][MAX_SENSOR_THRESHOLD + 1] = {0};
 float nic_sensor_threshold[MAX_SENSOR_NUM][MAX_SENSOR_THRESHOLD + 1] = {0};
 float dc_cf_sensor_threshold[MAX_SENSOR_NUM][MAX_SENSOR_THRESHOLD + 1] = {0};
 
+/*
+PLDM sensor threshold are populated in shared memory object by ncsid
+Retrieve these value and initialize global init_pldm_sensors
+*/
+static void
+init_pldm_sensors() {
+  int shm_fd = 0, i = 0;
+  int shm_size = sizeof(pldm_sensor_t) * NUM_PLDM_SENSORS;
+  pldm_sensor_t *pldm_sensors;
+
+  /* open the shared memory object */
+  shm_fd = shm_open(PLDM_SNR_INFO, O_RDONLY, 0666);
+  if (shm_fd < 0) {
+    return;
+  }
+
+  /* memory map the shared memory object */
+  pldm_sensors = mmap(0, shm_size, PROT_READ, MAP_SHARED, shm_fd, 0);
+  if (pldm_sensors < 0) {
+    syslog(LOG_INFO, "init_pldm_sensors sensor read failed");
+    close(shm_fd);
+    return;
+  }
+
+  for ( i = 0; i < NUM_PLDM_SENSORS; ++i) {
+    if (pldm_sensors[i].sensor_type == PLDM_SENSOR_TYPE_NUMERIC) {
+
+      int pft_id = pldm_sensors[i].pltf_sensor_id;
+
+      // make sure data is in range
+      if (pft_id < PLDM_NUMERIC_SENSOR_START || pft_id > PLDM_SENSOR_END) {
+        syslog(LOG_INFO, "init_pldm_sensors: invalid PLDM sensor 0x%x", pft_id);
+        continue;
+      }
+      nic_sensor_threshold[pft_id][UNR_THRESH] = pldm_sensors[i].unr;
+      nic_sensor_threshold[pft_id][UCR_THRESH] = pldm_sensors[i].ucr;
+      nic_sensor_threshold[pft_id][UNC_THRESH] = pldm_sensors[i].unc;
+      nic_sensor_threshold[pft_id][LNC_THRESH] = pldm_sensors[i].lnc;
+      nic_sensor_threshold[pft_id][LCR_THRESH] = pldm_sensors[i].lcr;
+      nic_sensor_threshold[pft_id][LNR_THRESH] = pldm_sensors[i].lnr;
+    }
+  }
+
+  if (munmap(pldm_sensors, shm_size) != 0) {
+    syslog(LOG_INFO, "init_pldm_sensors munmap failed");
+  }
+  close(shm_fd);
+  return;
+}
+
+
 static void
 sensor_thresh_array_init() {
   static bool init_done = false;
+  int spb_type;
+  int fan_type;
+  int fan_config;
 
   if (init_done)
     return;
 
+  spb_type = fby2_common_get_spb_type();
+  fan_type = fby2_common_get_fan_type();
+  fan_config = fby2_common_get_fan_config();
+
   spb_sensor_threshold[SP_SENSOR_INLET_TEMP][UCR_THRESH] = 40;
   spb_sensor_threshold[SP_SENSOR_OUTLET_TEMP][UCR_THRESH] = 70;
-  spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UCR_THRESH] = 11500;
-  spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UNC_THRESH] = 8500;
-  spb_sensor_threshold[SP_SENSOR_FAN0_TACH][LCR_THRESH] = 500;
-  spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UCR_THRESH] = 11500;
-  spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UNC_THRESH] = 8500;
-  spb_sensor_threshold[SP_SENSOR_FAN1_TACH][LCR_THRESH] = 500;
+
+  if (spb_type == TYPE_SPB_YV250) { // YV2.50
+    if (fan_type == TYPE_DUAL_R_FAN) {
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][LCR_THRESH] = 500;
+      spb_sensor_threshold[SP_SENSOR_FAN2_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN2_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN2_TACH][LCR_THRESH] = 500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][LCR_THRESH] = 500;
+      spb_sensor_threshold[SP_SENSOR_FAN3_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN3_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN3_TACH][LCR_THRESH] = 500;
+    } else {
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][LCR_THRESH] = 500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][LCR_THRESH] = 500;
+    }
+  } else { // YV2
+    if(fan_config == TYPE_15K_FAN) {
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UCR_THRESH] = 17000;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UNC_THRESH] = 12000;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][LCR_THRESH] = 500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UCR_THRESH] = 17000;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UNC_THRESH] = 12000;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][LCR_THRESH] = 500;
+    } else {
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN0_TACH][LCR_THRESH] = 500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UCR_THRESH] = 11500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][UNC_THRESH] = 8500;
+      spb_sensor_threshold[SP_SENSOR_FAN1_TACH][LCR_THRESH] = 500;
+    }
+  }
   //spb_sensor_threshold[SP_SENSOR_AIR_FLOW][UCR_THRESH] =  {75.0, 0, 0, 0, 0, 0, 0, 0};
   spb_sensor_threshold[SP_SENSOR_P5V][UCR_THRESH] = 5.5;
   spb_sensor_threshold[SP_SENSOR_P5V][LCR_THRESH] = 4.5;
@@ -431,6 +742,9 @@ sensor_thresh_array_init() {
   nic_sensor_threshold[MEZZ_SENSOR_TEMP][UNR_THRESH] = 120;
   nic_sensor_threshold[MEZZ_SENSOR_TEMP][UCR_THRESH] = 105;
   nic_sensor_threshold[MEZZ_SENSOR_TEMP][UNC_THRESH] = 95; // for logging purpose
+
+  init_pldm_sensors();
+
   init_done = true;
 }
 
@@ -446,6 +760,7 @@ size_t bic_ep_discrete_cnt = sizeof(bic_ep_discrete_list)/sizeof(uint8_t);
 #endif
 
 size_t spb_sensor_cnt = sizeof(spb_sensor_list)/sizeof(uint8_t);
+size_t spb_dual_r_fan_sensor_cnt = sizeof(spb_sensor_dual_r_fan_list)/sizeof(uint8_t);
 
 size_t nic_sensor_cnt = sizeof(nic_sensor_list)/sizeof(uint8_t);
 
@@ -453,9 +768,20 @@ size_t dc_sensor_cnt = sizeof(dc_sensor_list)/sizeof(uint8_t);
 
 size_t dc_cf_sensor_cnt = sizeof(dc_cf_sensor_list)/sizeof(uint8_t);
 
+#ifdef CONFIG_FBY2_GPV2
+size_t gpv2_sensor_cnt = sizeof(gpv2_sensor_list)/sizeof(uint8_t);
+#endif
+
+#ifdef CONFIG_FBY2_ND
+size_t bic_nd_sensor_cnt = sizeof(bic_nd_sensor_list)/sizeof(uint8_t);
+size_t bic_nd_discrete_cnt = sizeof(bic_nd_discrete_list)/sizeof(uint8_t);
+#endif
+
 enum {
   FAN0 = 0,
   FAN1,
+  FAN2,
+  FAN3,
 };
 
 enum {
@@ -488,8 +814,7 @@ rc_dimm_location_info rc_dimm_location_list[] = {
 };
 
 static sensor_info_t g_sinfo[MAX_NUM_FRUS][MAX_SENSOR_NUM] = {0};
-
-const static uint8_t gpio_12v[] = { 0, GPIO_P12V_STBY_SLOT1_EN, GPIO_P12V_STBY_SLOT2_EN, GPIO_P12V_STBY_SLOT3_EN, GPIO_P12V_STBY_SLOT4_EN };
+static ipmi_general_sensor_reading_t g_sread[MAX_NUM_FRUS][MAX_SENSOR_NUM] = {0};
 
 void
 msleep(int msec) {
@@ -604,33 +929,32 @@ fby2_get_server_type(uint8_t fru, uint8_t *type) {
   return bic_get_server_type(fru, type);
 }
 
-
 int
-fby2_is_server_12v_on(uint8_t slot_id, uint8_t *status) {
+fby2_get_server_type_directly(uint8_t fru, uint8_t *type) {
+  int ret;
+  uint8_t rbuf[64] = {0};
+  ipmi_dev_id_t *id = (ipmi_dev_id_t *)rbuf;
 
-  int val;
-  char path[64] = {0};
-
-  if (slot_id < 1 || slot_id > 4) {
-    return -1;
+  ret = bic_get_dev_id(fru, id);
+  if (!ret) {
+    // Use product ID to identify the server type
+    if (id->prod_id[0] == 0x39 && id->prod_id[1] == 0x30) {
+      *type = SERVER_TYPE_TL;
+    } else if (id->prod_id[0] == 0x43 && id->prod_id[1] == 0x52) {
+      *type = SERVER_TYPE_RC;
+    } else if (id->prod_id[0] == 0x50 && id->prod_id[1] == 0x45) {
+      *type = SERVER_TYPE_EP;
+    } else if (id->prod_id[0] == 0x44 && id->prod_id[1] == 0x4E) {
+      *type = SERVER_TYPE_ND;
+    } else {
+      *type = SERVER_TYPE_NONE;
+    }
   }
 
-  sprintf(path, GPIO_VAL, gpio_12v[slot_id]);
-
-  if (read_device(path, &val)) {
-    return -1;
-  }
-
-  if (val == 0x1) {
-    *status = 1;
-  } else {
-    *status = 0;
-  }
-
-  return 0;
+  return ret;
 }
 
-static int
+int
 fby2_mux_control(char *device, uint8_t addr, uint8_t channel) {          //PCA9848
   int dev;
   int ret;
@@ -677,11 +1001,39 @@ fby2_mux_control(char *device, uint8_t addr, uint8_t channel) {          //PCA98
 }
 
 static int
+read_nvme_temp(char *device, uint8_t *temp) {
+  int dev, ret, retry = 3;
+  uint8_t wbuf[4], rbuf[4];
+
+  dev = open(device, O_RDWR);
+  if (dev < 0) {
+    return -1;
+  }
+
+  while ((--retry) >= 0) {
+    wbuf[0] = 0x03;
+    ret = i2c_rdwr_msg_transfer(dev, 0xD4, wbuf, 1, rbuf, 1);
+    if (!ret)
+      break;
+    if (retry)
+      msleep(10);
+  }
+  close(dev);
+  if (ret) {
+    return -1;
+  }
+
+  *temp = rbuf[0];
+  return 0;
+}
+
+static int
 read_m2_temp_on_gp(char *device, uint8_t sensor_num, float *value) {
-  uint8_t mux_channel;
   int ret;
+  uint8_t mux_channel;
   uint8_t temp;
-  switch(sensor_num) {
+
+  switch (sensor_num) {
     case DC_SENSOR_NVMe1_CTEMP:
       mux_channel = MUX_CH_1;
       break;
@@ -704,17 +1056,23 @@ read_m2_temp_on_gp(char *device, uint8_t sensor_num, float *value) {
 
   // control I2C multiplexer on GP to target channel
   ret = fby2_mux_control(device, I2C_DC_MUX_ADDR, mux_channel);
-  if(ret < 0) {
+  if (ret < 0) {
      syslog(LOG_ERR, "%s: fby2_mux_control failed", __func__);
      return ret;
   }
 
-  ret = nvme_temp_read(device, &temp);
-  if(ret < 0) {
+  ret = read_nvme_temp(device, &temp);
+  if (ret < 0) {
+#ifdef DEBUG
      syslog(LOG_ERR, "%s: nvme_temp_read failed", __func__);
+#endif
      return EER_READ_NA;
   }
-  *value = (float)temp;
+
+  if ((temp >= 0x80) && (temp <= 0xC3)) {
+    return EER_READ_NA;
+  }
+  *value = (temp <= 0x7F) ? (float)temp : -(float)(0x100 - temp);
 
   return 0;
 }
@@ -737,7 +1095,7 @@ get_current_dir(const char *device, char *dir_name) {
 
   ret = pclose(fp);
   if(-1 == ret)
-     syslog(LOG_ERR, "$s pclose() fail ", __func__);
+     syslog(LOG_ERR, "%s: pclose() fail ", __func__);
 
   // Remove the newline character at the end
   size = strlen(dir_name);
@@ -797,37 +1155,55 @@ read_adc_value(const int pin, const char *device, float *value) {
 }
 
 static int
-read_hsc_value(const char* attr, const char *device, float r_sense, float *value) {
-  char full_dir_name[LARGEST_DEVICE_NAME];
-  char dir_name[LARGEST_DEVICE_NAME + 1];
-  int tmp;
+read_hsc_reg(uint8_t reg, uint8_t *rbuf, uint8_t len) {
+  int dev, ret, retry = 2;
+  uint8_t wbuf[4] = {0};
 
-  // Get current working directory
-  if (get_current_dir(device, dir_name))
-  {
-    return -1;
-  }
-  snprintf(
-      full_dir_name, LARGEST_DEVICE_NAME, "%s/%s", dir_name, attr);
-
-  if(read_device(full_dir_name, &tmp)) {
+  dev = open(I2C_DEV_HSC, O_RDWR);
+  if (dev < 0) {
     return -1;
   }
 
-  if ((strcmp(attr, HSC_OUT_CURR) == 0) || (strcmp(attr, HSC_IN_POWER) == 0)) {
-    *value = ((float) tmp)/r_sense/UNIT_DIV;
+  while ((--retry) >= 0) {
+    wbuf[0] = reg;
+    ret = i2c_rdwr_msg_transfer(dev, I2C_HSC_ADDR, wbuf, 1, rbuf, len);
+    if (!ret)
+      break;
+    if (retry)
+      msleep(10);
   }
-  else {
-    *value = ((float) tmp)/UNIT_DIV;
+  close(dev);
+  if (ret) {
+    return -1;
   }
 
   return 0;
 }
 
+static float
+direct2real(uint16_t direct, float m, int b, int R) {
+  if (m == 0) {
+    return 0;
+  }
+  return (((float)direct * pow(10, -R) - b) / m);  // X = 1/m * (Y * 10^-R - b)
+}
+
 static int
-read_hsc_ein(const char *device, uint8_t addr, float r_sense, float *value) {
-  int dev, ret;
-  uint8_t wbuf[4] = {0xdc}, rbuf[12] = {0};
+read_hsc_value(uint8_t reg, float m, int b, int R, float *value) {
+  uint16_t data;
+
+  if (read_hsc_reg(reg, (uint8_t *)&data, 2)) {
+    return -1;
+  }
+
+  *value = direct2real(data, m, b, R);
+  return 0;
+}
+
+static int
+read_hsc_ein(float r_sense, float *value) {
+  int ret;
+  uint8_t rbuf[12] = {0};
   uint32_t energy, rollover, sample;
   uint32_t pre_energy, pre_rollover, pre_sample;
   uint32_t sample_diff;
@@ -835,14 +1211,8 @@ read_hsc_ein(const char *device, uint8_t addr, float r_sense, float *value) {
   static uint32_t last_energy, last_rollover, last_sample;
   static uint8_t pre_ein = 0;
 
-  dev = open(device, O_RDWR);
-  if (dev < 0) {
-    return -1;
-  }
-
   // read READ_EIN_EXT
-  ret = i2c_rdwr_msg_transfer(dev, addr, wbuf, 1, rbuf, 9);
-  close(dev);
+  ret = read_hsc_reg(0xdc, rbuf, 9);
   if (ret || (rbuf[0] != 8)) {  // length = 8 bytes
     return -1;
   }
@@ -1013,54 +1383,210 @@ bic_read_sensor_wrapper(uint8_t fru, uint8_t sensor_num, bool discrete,
   int index;
   sdr_full_t *sdr;
   ipmi_sensor_reading_t sensor;
+  ipmi_general_sensor_reading_t *g_sensor = &g_sread[fru-1][sensor_num];
   ipmi_accuracy_sensor_reading_t acsensor;
   bool is_accuracy_sensor = false;
   uint8_t server_type = 0xFF;
+  int slot_type = 3;
 
-  ret = fby2_get_server_type(fru, &server_type);
-  if (ret) {
-    syslog(LOG_ERR, "%s, Get server type failed", __func__);
-  }
+  slot_type = fby2_get_slot_type(fru);
 
-#if !defined(CONFIG_FBY2_RC) && !defined(CONFIG_FBY2_EP)  // workaround for now, this is only for TL
-  for (i=0; i < sizeof(bic_sdr_accuracy_sensor_support_list)/sizeof(uint8_t); i++) {
-    if (bic_sdr_accuracy_sensor_support_list[i] == sensor_num)
-      is_accuracy_sensor = true;
-  }
+  if (slot_type == 0) { //Server
+    ret = fby2_get_server_type(fru, &server_type);
+    if (ret) {
+      syslog(LOG_ERR, "%s, Get server type failed", __func__);
+    }
+
+#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP) || defined(CONFIG_FBY2_ND)
+    switch(server_type){
+      case SERVER_TYPE_EP:
+      case SERVER_TYPE_RC:
+      case SERVER_TYPE_ND:
+        break;
+      case SERVER_TYPE_TL:
+        for (i=0; i < sizeof(bic_sdr_accuracy_sensor_support_list)/sizeof(uint8_t); i++) {
+          if (bic_sdr_accuracy_sensor_support_list[i] == sensor_num)
+            is_accuracy_sensor = true;
+        }
+        break;
+      default:
+        return -1;
+    }
+#else
+    for (i=0; i < sizeof(bic_sdr_accuracy_sensor_support_list)/sizeof(uint8_t); i++) {
+      if (bic_sdr_accuracy_sensor_support_list[i] == sensor_num)
+        is_accuracy_sensor = true;
+    }
 #endif
+    // accuracy sensor VCCIN_VR_POUT, INA230_POWER and SOC_PACKAGE_PWR
+    if (is_accuracy_sensor) {
+      ret = bic_read_accuracy_sensor(fru, sensor_num, &acsensor);
+      if (ret)
+        return ret;
+      g_sread[fru-1][sensor_num].int_value = acsensor.int_value;
+      g_sread[fru-1][sensor_num].dec_value = acsensor.dec_value;
+      g_sread[fru-1][sensor_num].flags = acsensor.flags;
+      g_sread[fru-1][sensor_num].is_accuracy = true;
+    } else {
+      ret = bic_read_sensor(fru, sensor_num, &sensor);
+      if (ret)
+        return ret;
+      g_sread[fru-1][sensor_num].int_value = sensor.value;
+      g_sread[fru-1][sensor_num].dec_value = 0;
+      g_sread[fru-1][sensor_num].flags = sensor.flags;
+      g_sread[fru-1][sensor_num].status = sensor.status;
+      g_sread[fru-1][sensor_num].ext_status = sensor.ext_status;
+      g_sread[fru-1][sensor_num].is_accuracy = false;
+    }
 
-  // accuracy sensor VCCIN_VR_POUT, INA230_POWER and SOC_PACKAGE_PWR
-  if (is_accuracy_sensor) {
-    ret = bic_read_accuracy_sensor(fru, sensor_num, &acsensor);
-    sensor.flags = acsensor.flags;
-  } else {
-    ret = bic_read_sensor(fru, sensor_num, &sensor);
-  }
-  if (ret) {
-    return ret;
-  }
-  msleep(1);  // a little delay to reduce CPU utilization
+    msleep(1);  // a little delay to reduce CPU utilization
 
-  if (sensor.flags & BIC_SENSOR_READ_NA) {
-#ifdef DEBUG
-    syslog(LOG_ERR, "bic_read_sensor_wrapper: Reading Not Available");
-    syslog(LOG_ERR, "bic_read_sensor_wrapper: sensor_num: 0x%X, flag: 0x%X",
-        sensor_num, sensor.flags);
-#endif
-    return EER_READ_NA;
-  }
+    if(server_type == SERVER_TYPE_RC) {
+      for(index = 0; index < sizeof(rc_dimm_location_list)/sizeof(rc_dimm_location_info); index++) {
+        if(sensor_num == rc_dimm_location_list[index].dimm_sensor_num) {
+          if(rc_dimm_present_check(fru, index, sensor_num))
+            return EER_READ_NA;
+        }
+      }
+    }
+  } else if (slot_type == SLOT_TYPE_GPV2) {
+    uint8_t dev_id = DEV_NONE;
+    switch (sensor_num) {
+      case GPV2_SENSOR_INLET_TEMP:
+      case GPV2_SENSOR_OUTLET_TEMP:
+      case GPV2_SENSOR_P12V_BIC_SCALED:
+      case GPV2_SENSOR_P3V3_STBY_BIC_SCALED:
+      case GPV2_SENSOR_P0V92_BIC_SCALED:
+      case GPV2_SENSOR_P1V8_BIC_SCALED:
+      case GPV2_SENSOR_INA230_POWER:
+      case GPV2_SENSOR_INA230_VOLT:
+      case GPV2_SENSOR_3V3_VR_Vol:
+      case GPV2_SENSOR_0V92_VR_Vol:
+      case GPV2_SENSOR_3V3_VR_Curr:
+      case GPV2_SENSOR_0V92_VR_Curr:
+      case GPV2_SENSOR_3V3_VR_Pwr:
+      case GPV2_SENSOR_0V92_VR_Pwr:
+      case GPV2_SENSOR_3V3_VR_Temp:
+      case GPV2_SENSOR_0V92_VR_Temp:
+      case GPV2_SENSOR_PCIE_SW_TEMP:
+        dev_id = DEV_NONE;
+        ret = bic_read_sensor(fru, sensor_num, &sensor);
+        if (ret)
+          return ret;
+        g_sread[fru-1][sensor_num].int_value = sensor.value;
+        g_sread[fru-1][sensor_num].dec_value = 0;
+        g_sread[fru-1][sensor_num].flags = sensor.flags;
+        g_sread[fru-1][sensor_num].status = sensor.status;
+        g_sread[fru-1][sensor_num].ext_status = sensor.ext_status;
+        g_sread[fru-1][sensor_num].is_accuracy = false;
+        break;
+      case GPV2_SENSOR_DEV0_INA231_PW:
+        dev_id = 1;
+        break;
+      case GPV2_SENSOR_DEV1_INA231_PW:
+        dev_id = 2;
+        break;
+      case GPV2_SENSOR_DEV2_INA231_PW:
+        dev_id = 3;
+        break;
+      case GPV2_SENSOR_DEV3_INA231_PW:
+        dev_id = 4;
+        break;
+      case GPV2_SENSOR_DEV4_INA231_PW:
+        dev_id = 5;
+        break;
+      case GPV2_SENSOR_DEV5_INA231_PW:
+        dev_id = 6;
+        break;
+      case GPV2_SENSOR_DEV6_INA231_PW:
+        dev_id = 7;
+        break;
+      case GPV2_SENSOR_DEV7_INA231_PW:
+        dev_id = 8;
+        break;
+      case GPV2_SENSOR_DEV8_INA231_PW:
+        dev_id = 9;
+        break;
+      case GPV2_SENSOR_DEV9_INA231_PW:
+        dev_id = 10;
+        break;
+      case GPV2_SENSOR_DEV10_INA231_PW:
+        dev_id = 11;
+        break;
+      case GPV2_SENSOR_DEV11_INA231_PW:
+        dev_id = 12;
+        break;
+      default:
+        dev_id = DEV_NONE;
+        break;
+    }
 
-  if(server_type == SERVER_TYPE_RC) {
-    for(index = 0; index < sizeof(rc_dimm_location_list)/sizeof(rc_dimm_location_info); index++) {
-      if(sensor_num == rc_dimm_location_list[index].dimm_sensor_num) {
-        if(rc_dimm_present_check(fru, index, sensor_num))
-          return EER_READ_NA;
+    if (dev_id != DEV_NONE) {
+      uint8_t rbuf[256] = {0x00};
+      uint8_t rlen = 0;
+      uint8_t dev_sensor_num = sensor_num;
+      int num = 0;
+      ipmi_device_sensor_t sdata = {0};
+      ipmi_device_sensor_reading_t *dev_sensor = (ipmi_device_sensor_reading_t *) rbuf;
+      uint16_t exist_flag = 0;
+
+      ret = bic_read_device_sensors(fru, dev_id, dev_sensor,&rlen);
+
+      if (ret) {
+        return ret;
+      } else if (rlen == 0) {
+        return -1;
+      }
+
+      msleep(1);  // a little delay to reduce CPU utilization
+
+      num = rlen/DEV_SENSOR_INFO_LEN;
+      if (num > MAX_NUM_DEV_SENSORS)
+        num = MAX_NUM_DEV_SENSORS;
+
+      for (i=0;i<num;i++) {
+        sdata = dev_sensor->data[i];
+        dev_sensor_num = sdata.sensor_num;
+        exist_flag |= (1 << (dev_sensor_num & 0xf));
+        g_sread[fru-1][dev_sensor_num].int_value = sdata.int_value;
+        g_sread[fru-1][dev_sensor_num].dec_value = sdata.dec_value;
+        g_sread[fru-1][dev_sensor_num].flags = sdata.flags;
+        g_sread[fru-1][dev_sensor_num].status = sdata.status;
+        g_sread[fru-1][dev_sensor_num].ext_status = sdata.ext_status;
+        switch (dev_sensor_num & 0xf) {
+          case GPV2_SENSOR_DEV_INA231_PW:
+            g_sread[fru-1][dev_sensor_num].is_accuracy = true;
+            break;
+          case GPV2_SENSOR_DEV_INA231_VOL:
+          case GPV2_SENSOR_DEV_Temp:
+          case GPV2_SENSOR_DEV_Ambient_Temp:
+          default:
+            g_sread[fru-1][dev_sensor_num].is_accuracy = false;
+            break;
+        }
+      }
+
+      // set NA if device sensor doesn't get from BIC
+      // for example, BMC sensor list has sensor removed from newer BIC
+      for (i=sensor_num; i < (sensor_num + MAX_NUM_DEV_SENSORS); i++) {
+        if (exist_flag & (1 << (i & 0xf)))
+          continue;
+        g_sread[fru-1][i].flags = BIC_SENSOR_READ_NA;
       }
     }
   }
 
+  if (g_sensor->flags & BIC_SENSOR_READ_NA) {
+#ifdef DEBUG
+    syslog(LOG_ERR, "bic_read_sensor_wrapper: Reading Not Available");
+    syslog(LOG_ERR, "bic_read_sensor_wrapper: sensor_num: 0x%X, flag: 0x%X",
+        sensor_num, g_sensor->flags);
+#endif
+    return EER_READ_NA;
+  }
+
   if (discrete) {
-    *(float *) value = (float) sensor.status;
+    *(float *) value = (float) g_sensor->status;
     return 0;
   }
 
@@ -1068,24 +1594,24 @@ bic_read_sensor_wrapper(uint8_t fru, uint8_t sensor_num, bool discrete,
 
   // If the SDR is not type1, no need for conversion
   if (sdr->type !=1) {
-    *(float *) value = sensor.value;
+    *(float *) value = g_sensor->int_value;
     return 0;
   }
 
-  if (is_accuracy_sensor) {
-    *(float *) value = ((float)(acsensor.int_value*100 + acsensor.dec_value))/100;
+  if (g_sensor->is_accuracy) {
+    *(float *) value = ((float)(g_sensor->int_value*100 + g_sensor->dec_value))/100;
     return 0;
   }
 
   // y = (mx + b * 10^b_exp) * 10^r_exp
-  uint8_t x;
+  int x;
   uint8_t m_lsb, m_msb;
   uint16_t m = 0;
   uint8_t b_lsb, b_msb;
   uint16_t b = 0;
   int8_t b_exp, r_exp;
 
-  x = sensor.value;
+  x = g_sensor->int_value;
 
   m_lsb = sdr->m_val;
   m_msb = sdr->m_tolerance >> 6;
@@ -1109,19 +1635,32 @@ bic_read_sensor_wrapper(uint8_t fru, uint8_t sensor_num, bool discrete,
 
   //printf("m:%d, x:%d, b:%d, b_exp:%d, r_exp:%d\n", m, x, b, b_exp, r_exp);
 
-  * (float *) value = ((m * x) + (b * pow(10, b_exp))) * (pow(10, r_exp));
-
-  if ((sensor_num == BIC_SENSOR_SOC_THERM_MARGIN) && (* (float *) value > 0)) {
-   * (float *) value -= (float) THERMAL_CONSTANT;
+  if ((slot_type == SLOT_TYPE_SERVER) && (sensor_num == BIC_SENSOR_SOC_THERM_MARGIN) && (x > 0)) {
+    x -= THERMAL_CONSTANT;
   }
 
-  if (*(float *) value > MAX_POS_READING_MARGIN) {     //Negative reading handle
-    for(i=0;i<sizeof(bic_neg_reading_sensor_support_list)/sizeof(uint8_t);i++) {
-      if (sensor_num == bic_neg_reading_sensor_support_list[i]) {
-        * (float *) value -= (float) THERMAL_CONSTANT;
+  if (x > MAX_POS_READING_MARGIN) {     //Negative reading handle
+    if (slot_type == SLOT_TYPE_SERVER) { //Server
+      if (server_type == SERVER_TYPE_TL) {
+        for(i=0;i<sizeof(bic_neg_reading_sensor_support_list)/sizeof(uint8_t);i++) {
+          if (sensor_num == bic_neg_reading_sensor_support_list[i]) {
+            x -= THERMAL_CONSTANT;
+          }
+        }
       }
     }
+#ifdef CONFIG_FBY2_GPV2
+    else if (slot_type == SLOT_TYPE_GPV2) {
+      for(i=0;i<sizeof(bic_gpv2_neg_reading_sensor_support_list)/sizeof(uint8_t);i++) {
+        if (sensor_num == bic_gpv2_neg_reading_sensor_support_list[i]) {
+          x -= THERMAL_CONSTANT;
+        }
+      }
+    }
+#endif
   }
+
+  * (float *) value = ((m * x) + (b * pow(10, b_exp))) * (pow(10, r_exp));
 
   return 0;
 }
@@ -1231,6 +1770,7 @@ fby2_sensor_sdr_init(uint8_t fru, sensor_info_t *sinfo) {
       switch(fby2_get_slot_type(fru))
       {
         case SLOT_TYPE_SERVER:
+        case SLOT_TYPE_GPV2:
               if (fby2_sensor_sdr_path(fru, path) < 0) {
 #ifdef DEBUG
                 syslog(LOG_WARNING, "fby2_sensor_sdr_init: get_fru_sdr_path failed\n");
@@ -1274,7 +1814,8 @@ fby2_sdr_init(uint8_t fru) {
 
   static bool init_done[MAX_NUM_FRUS] = {false};
 
-  if (!init_done[fru - 1]) {
+  // Sensord's SDR needs update afer BIC update
+  if (!init_done[fru - 1] || bic_get_sdr_update_flag(fru)) {
 
     sensor_info_t *sinfo = g_sinfo[fru-1];
 
@@ -1282,6 +1823,8 @@ fby2_sdr_init(uint8_t fru) {
       return ERR_NOT_READY;
 
     init_done[fru - 1] = true;
+    bic_set_sdr_update_flag(fru, 0);
+    syslog(LOG_DEBUG, "%s : slot%u SDR update successfully", __func__, fru);
   }
 
   return 0;
@@ -1333,46 +1876,18 @@ is_server_prsnt(uint8_t fru) {
   }
 }
 
+/*
+ * Get SLOT type
+ * PAL_TYPE = 0(TwinLake), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot), 4(Glacier Point V2)
+ */
 int
 fby2_get_slot_type(uint8_t fru) {
-  int type;
-
-  // PAL_TYPE[7:6] = 0(Server), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
-  // PAL_TYPE[5:4] = 0(Server), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
-  // PAL_TYPE[3:2] = 0(Server), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
-  // PAL_TYPE[1:0] = 0(Server), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
-  if (read_device(SLOT_FILE, &type)) {
-    printf("Get slot type failed\n");
-    return -1;
-  }
-
-  switch(fru)
-  {
-    case FRU_SLOT1:
-      type = (type & (0x3 << 0)) >> 0;
-    break;
-    case FRU_SLOT2:
-      type = (type & (0x3 << 2)) >> 2;
-    break;
-    case FRU_SLOT3:
-      type = (type & (0x3 << 4)) >> 4;
-    break;
-    case FRU_SLOT4:
-      type = (type & (0x3 << 6)) >> 6;
-    break;
-    default:
-      type = 3;   //set default to 3(Empty Slot)
-    break;
-  }
-
-  return type;
+  return bic_get_slot_type(fru);
 }
 
 /* Get the units for the sensor */
 int
 fby2_sensor_units(uint8_t fru, uint8_t sensor_num, char *units) {
-  uint8_t op, modifier;
-  sensor_info_t *sinfo;
 
   switch(fru) {
     case FRU_SLOT1:
@@ -1382,10 +1897,11 @@ fby2_sensor_units(uint8_t fru, uint8_t sensor_num, char *units) {
       switch(fby2_get_slot_type(fru))
       {
          case SLOT_TYPE_SERVER:
+         case SLOT_TYPE_GPV2:
            if (is_server_prsnt(fru) && (fby2_sdr_init(fru) != 0)) {
               return -1;
            }
-           sprintf(units, "");
+           strcpy(units, "");
            break;
          case SLOT_TYPE_CF:
            switch(sensor_num) {
@@ -1440,8 +1956,14 @@ fby2_sensor_units(uint8_t fru, uint8_t sensor_num, char *units) {
         case SP_SENSOR_FAN1_TACH:
           sprintf(units, "RPM");
           break;
+        case SP_SENSOR_FAN2_TACH:
+          sprintf(units, "RPM");
+          break;
+        case SP_SENSOR_FAN3_TACH:
+          sprintf(units, "RPM");
+          break;
         case SP_SENSOR_AIR_FLOW:
-          sprintf(units, "");
+          strcpy(units, "");
           break;
         case SP_SENSOR_P5V:
           sprintf(units, "Volts");
@@ -1485,12 +2007,33 @@ fby2_sensor_units(uint8_t fru, uint8_t sensor_num, char *units) {
         case SP_SENSOR_HSC_IN_POWER:
           sprintf(units, "Watts");
           break;
+        case SP_SENSOR_HSC_PEAK_IOUT:
+          sprintf(units, "Amps");
+          break;
+        case SP_SENSOR_HSC_PEAK_PIN:
+          sprintf(units, "Watts");
+          break;
       }
       break;
     case FRU_NIC:
       switch(sensor_num) {
         case MEZZ_SENSOR_TEMP:
           sprintf(units, "C");
+          break;
+        case NIC_SOC_TEMP:
+          sprintf(units, "C");
+          break;
+        case PORT_0_TEMP:
+          sprintf(units, "C");
+          break;
+        case PORT_0_LINK_SPEED:
+          sprintf(units, "100Mbps");
+          break;
+        case NIC_HEALTH_STATE:
+          strcpy(units, "");
+          break;
+        case PORT_0_LINK_STATE:
+          strcpy(units, "");
           break;
       }
       break;
@@ -1511,6 +2054,7 @@ fby2_sensor_threshold(uint8_t fru, uint8_t sensor_num, uint8_t thresh, float *va
       switch(fby2_get_slot_type(fru))
       {
         case SLOT_TYPE_SERVER:
+        case SLOT_TYPE_GPV2:
            break;
         case SLOT_TYPE_CF:
            *value = dc_cf_sensor_threshold[sensor_num][thresh];
@@ -1566,9 +2110,12 @@ fby2_sensor_name(uint8_t fru, uint8_t sensor_num, char *name) {
               break;
 #endif
             default:
-              sprintf(name, "");
+              strcpy(name, "");
               return -1;
           }
+          break;
+        case SLOT_TYPE_GPV2:
+          strcpy(name, "");
           break;
         case SLOT_TYPE_CF:
           switch(sensor_num) {
@@ -1585,7 +2132,7 @@ fby2_sensor_name(uint8_t fru, uint8_t sensor_num, char *name) {
               sprintf(name, "DC_CF_INA230_POWER");
               break;
             default:
-              sprintf(name, "");
+              strcpy(name, "");
               break;
           }
           break;
@@ -1622,9 +2169,10 @@ fby2_sensor_name(uint8_t fru, uint8_t sensor_num, char *name) {
               sprintf(name, "DC_NVMe6_CTEMP");
               break;
             default:
-              sprintf(name, "");
+              strcpy(name, "");
               break;
           }
+          break;
       }
       break;
     case FRU_SPB:
@@ -1643,6 +2191,12 @@ fby2_sensor_name(uint8_t fru, uint8_t sensor_num, char *name) {
           break;
         case SP_SENSOR_FAN1_TACH:
           sprintf(name, "SP_FAN1_TACH");
+          break;
+        case SP_SENSOR_FAN2_TACH:
+          sprintf(name, "SP_FAN2_TACH");
+          break;
+        case SP_SENSOR_FAN3_TACH:
+          sprintf(name, "SP_FAN3_TACH");
           break;
         case SP_SENSOR_AIR_FLOW:
           sprintf(name, "SP_AIR_FLOW");
@@ -1695,6 +2249,12 @@ fby2_sensor_name(uint8_t fru, uint8_t sensor_num, char *name) {
         case SP_SENSOR_HSC_IN_POWER:
           sprintf(name, "SP_HSC_IN_POWER");
           break;
+        case SP_SENSOR_HSC_PEAK_IOUT:
+          sprintf(name, "SP_HSC_PEAK_IOUT");
+          break;
+        case SP_SENSOR_HSC_PEAK_PIN:
+          sprintf(name, "SP_HSC_PEAK_PIN");
+          break;
       }
       break;
     case FRU_NIC:
@@ -1702,24 +2262,66 @@ fby2_sensor_name(uint8_t fru, uint8_t sensor_num, char *name) {
         case MEZZ_SENSOR_TEMP:
           sprintf(name, "MEZZ_SENSOR_TEMP");
           break;
+        case NIC_SOC_TEMP:
+          sprintf(name, "NIC_SOC_TEMP (PLDM)");
+          break;
+        case PORT_0_TEMP:
+          sprintf(name, "PORT_0_TEMP (PLDM)");
+          break;
+        case PORT_0_LINK_SPEED:
+          sprintf(name, "PORT_0_LINK_SPEED (PLDM)");
+          break;
+        case NIC_HEALTH_STATE:
+          sprintf(name, "NIC_HEALTH_STATE (PLDM)");
+          break;
+        case PORT_0_LINK_STATE:
+          sprintf(name, "PORT_0_LINK_STATE (PLDM)");
+          break;
       }
       break;
   }
   return 0;
 }
 
+int
+fby2_disable_gp_m2_monior(uint8_t slot_id, uint8_t dis) {
+  char key[MAX_KEY_LEN];
+  char value[MAX_VALUE_LEN];
+
+  sprintf(key, "slot%u_dis_gp_m2_mon", slot_id);
+  sprintf(value, "%u", dis);
+  if (kv_set(key, value, 0, 0) < 0) {
+    return -1;
+  }
+
+  return 0;
+}
+
+static bool
+check_gp_m2_monior(uint8_t slot_id) {
+  char key[MAX_KEY_LEN];
+  char value[MAX_VALUE_LEN] = {0};
+
+  sprintf(key, "slot%u_dis_gp_m2_mon", slot_id);
+  if (kv_get(key, value, NULL, 0)) {
+    return true;
+  }
+
+  if (strtoul(value, NULL, 10) == 0)
+    return true;
+
+  return false;
+}
 
 int
 fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
 
-  float volt;
-  float curr;
   int ret;
   bool discrete;
   int i;
   char path[LARGEST_DEVICE_NAME];
-  uint8_t status;
-  uint8_t server_type = 0xFF;
+  int spb_type;
+  int fan_type;
 
   switch (fru) {
     case FRU_SLOT1:
@@ -1743,30 +2345,33 @@ fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
 
           i = 0;
 #if defined(CONFIG_FBY2_RC)
-          ret = fby2_get_server_type(fru, &server_type);
-          if (ret) {
-            syslog(LOG_ERR, "%s, Get server type failed", __func__);
-          }
-          switch (server_type) {
-            case SERVER_TYPE_RC:
-              while (i < bic_rc_discrete_cnt) {
-                if (sensor_num == bic_rc_discrete_list[i++]) {
-                  discrete = true;
-                  break;
+          {
+            uint8_t server_type = 0xFF;
+            ret = fby2_get_server_type(fru, &server_type);
+            if (ret) {
+              syslog(LOG_ERR, "%s, Get server type failed", __func__);
+            }
+            switch (server_type) {
+              case SERVER_TYPE_RC:
+                while (i < bic_rc_discrete_cnt) {
+                  if (sensor_num == bic_rc_discrete_list[i++]) {
+                    discrete = true;
+                    break;
+                  }
                 }
-              }
-              break;
-            case SERVER_TYPE_TL:
-              while (i < bic_discrete_cnt) {
-                if (sensor_num == bic_discrete_list[i++]) {
-                  discrete = true;
-                  break;
+                break;
+              case SERVER_TYPE_TL:
+                while (i < bic_discrete_cnt) {
+                  if (sensor_num == bic_discrete_list[i++]) {
+                    discrete = true;
+                    break;
+                  }
                 }
-              }
-              break;
-            default:
-              syslog(LOG_ERR, "%s, Undefined server type", __func__);
-              return -1;
+                break;
+              default:
+                syslog(LOG_ERR, "%s, Undefined server type", __func__);
+                return -1;
+            }
           }
 #else
           while (i < bic_discrete_cnt) {
@@ -1777,17 +2382,29 @@ fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
           }
 #endif
           return bic_read_sensor_wrapper(fru, sensor_num, discrete, value);
-        case SLOT_TYPE_CF:
-          //Crane Flat
-          /* Check whether the system is 12V off or on */
-          ret = fby2_is_server_12v_on(fru, &status);
-          if (ret < 0) {
-            syslog(LOG_ERR, "fby2_get_server_power: fby2_is_server_12v_on failed");
+#ifdef CONFIG_FBY2_GPV2
+        case SLOT_TYPE_GPV2:
+          if (!(is_server_prsnt(fru))) {
             return -1;
           }
 
-          if (1 != status)
-            return -1;
+          ret = fby2_sdr_init(fru);
+          if (ret < 0) {
+            return ret;
+          }
+
+          //Glacier Point V2
+          /* Check whether the system is 12V off or on */
+          if (!bic_is_slot_12v_on(fru))
+            return EER_READ_NA;
+
+          return bic_read_sensor_wrapper(fru, sensor_num, false, value);
+#endif
+        case SLOT_TYPE_CF:
+          //Crane Flat
+          /* Check whether the system is 12V off or on */
+          if (!bic_is_slot_12v_on(fru))
+            return EER_READ_NA;
 
           switch(sensor_num) {
             case DC_CF_SENSOR_OUTLET_TEMP:
@@ -1819,14 +2436,8 @@ fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
         case SLOT_TYPE_GP:
           //Glacier Point
           /* Check whether the system is 12V off or on */
-          ret = fby2_is_server_12v_on(fru, &status);
-          if (ret < 0) {
-            syslog(LOG_ERR, "fby2_get_server_power: fby2_is_server_12v_on failed");
-            return -1;
-          }
-
-          if (1 != status)
-            return -1;
+          if (!bic_is_slot_12v_on(fru))
+            return EER_READ_NA;
 
           switch(sensor_num) {
             case DC_SENSOR_OUTLET_TEMP:
@@ -1857,6 +2468,11 @@ fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
             case DC_SENSOR_NVMe4_CTEMP:
             case DC_SENSOR_NVMe5_CTEMP:
             case DC_SENSOR_NVMe6_CTEMP:
+              if (!bic_is_slot_power_en(fru))
+                return EER_READ_NA;
+              if (check_gp_m2_monior(fru) == false)
+                return EER_READ_NA;
+
               if (fru == FRU_SLOT1)
                 snprintf(path, LARGEST_DEVICE_NAME, "%s", I2C_DEV_DC_1);
               else
@@ -1871,6 +2487,15 @@ fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
       }
       break;
     case FRU_SPB:
+      spb_type = fby2_common_get_spb_type();
+      fan_type = fby2_common_get_fan_type();
+
+      if (spb_type == TYPE_SPB_YV250 && fan_type == TYPE_SINGLE_FAN) {
+        if (sensor_num == SP_SENSOR_FAN0_TACH || sensor_num == SP_SENSOR_FAN1_TACH) {
+          sensor_num = sensor_num + 2;
+        }
+      }
+
       switch(sensor_num) {
 
         // Inlet, Outlet Temp
@@ -1884,6 +2509,10 @@ fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
           return read_fan_value(FAN0, FAN_TACH_RPM, (float*) value);
         case SP_SENSOR_FAN1_TACH:
           return read_fan_value(FAN1, FAN_TACH_RPM, (float*) value);
+        case SP_SENSOR_FAN2_TACH:
+          return read_fan_value(FAN2, FAN_TACH_RPM, (float*) value);
+        case SP_SENSOR_FAN3_TACH:
+          return read_fan_value(FAN3, FAN_TACH_RPM, (float*) value);
 
         // Various Voltages
         case SP_SENSOR_P5V:
@@ -1913,22 +2542,73 @@ fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value) {
 
         // Hot Swap Controller
         case SP_SENSOR_HSC_IN_VOLT:
-          return read_hsc_value(HSC_IN_VOLT, HSC_DEVICE, ml_hsc_r_sense, (float *) value);
+          return read_hsc_value(0x88, 19599, 0, -2, (float *)value);
         case SP_SENSOR_HSC_OUT_CURR:
-          return read_hsc_value(HSC_OUT_CURR, HSC_DEVICE, ml_hsc_r_sense, (float *) value);
+          return read_hsc_value(0x8c, (800*hsc_r_sense), 20475, -1, (float *)value);
         case SP_SENSOR_HSC_TEMP:
-          return read_hsc_value(HSC_TEMP, HSC_DEVICE, ml_hsc_r_sense, (float*) value);
+          return read_hsc_value(0x8d, 42, 31880, -1, (float *)value);
         case SP_SENSOR_HSC_IN_POWER:
-          return read_hsc_ein(I2C_DEV_HSC, I2C_HSC_ADDR, ml_hsc_r_sense, (float*) value);
+          return read_hsc_ein(hsc_r_sense, (float *)value);
+        case SP_SENSOR_HSC_PEAK_IOUT:
+          return read_hsc_value(0xd0, (800*hsc_r_sense), 20475, -1, (float *)value);
+        case SP_SENSOR_HSC_PEAK_PIN:
+          return read_hsc_value(0xda, (6123*hsc_r_sense), 0, -2, (float *)value);
       }
       break;
 
-      case FRU_NIC:
-       	  switch(sensor_num) {
-       	    // Mezz Temp
-       		  case MEZZ_SENSOR_TEMP:
-              return read_nic_temp(I2C_DEV_NIC, I2C_NIC_ADDR, (float*) value);
-       	  }
+    case FRU_NIC:
+      switch(sensor_num) {
+        // Mezz Temp
+        case MEZZ_SENSOR_TEMP:
+          return read_nic_temp(I2C_DEV_NIC, I2C_NIC_ADDR, (float*) value);
+      }
       break;
   }
+  return EER_UNHANDLED;
+}
+
+static int
+check_hsc_status(uint8_t reg, uint8_t len, uint16_t mask) {
+  uint8_t rbuf[4] = {0};
+  uint16_t sts;
+
+  if (read_hsc_reg(reg, rbuf, len)) {
+    return -1;
+  }
+
+  sts = (len == 1) ? rbuf[0] : (rbuf[1] << 8)|rbuf[0];
+  if ((sts & mask) != 0) {
+    return 1;
+  }
+
+  return 0;
+}
+
+static int
+clear_hsc_fault(void) {
+  return read_hsc_reg(0x03, NULL, 0);  // CLEAR_FAULTS
+}
+
+int
+fby2_check_hsc_sts_iout(uint8_t mask) {
+  return check_hsc_status(0x7b, 1, mask);  // STATUS_IOUT
+}
+
+int
+fby2_check_hsc_fault(void) {
+  if (check_hsc_status(0x79, 2, 0xBFFE))  // STATUS_WORD
+    return -1;
+  if (check_hsc_status(0x7a, 1, 0xFF))    // STATUS_VOUT
+    return -1;
+  if (check_hsc_status(0x7b, 1, 0xDF))    // STATUS_IOUT
+    return -1;
+  if (check_hsc_status(0x7c, 1, 0xFF))    // STATUS_INPUT
+    return -1;
+  if (check_hsc_status(0x7d, 1, 0xFF))    // STATUS_TEMPERATURE
+    return -1;
+  if (check_hsc_status(0x80, 1, 0xFF))    // STATUS_MFR_SPECIFIC
+    return -1;
+
+  clear_hsc_fault();
+  return 0;
 }

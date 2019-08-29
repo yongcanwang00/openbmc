@@ -1,4 +1,22 @@
-# Copyright (C) 2004-present Facebook. All Rights Reserved
+#!/usr/bin/env python
+#
+# Copyright 2018-present Facebook. All Rights Reserved.
+#
+# This program file is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; version 2 of the License.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program in a file named COPYING; if not, write to the
+# Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301 USA
+#
 
 from __future__ import absolute_import
 from __future__ import division
@@ -157,7 +175,7 @@ class fscdTest():
         # sub-test4: pwm when all temp~[30C,35C] pwm=16 => duty_cycle=51
         if not self.run_pwm_test(userver_temp=32000,
                                  switch_temp=32000,
-                                 intake_temp=37000,
+                                 intake_temp=41000,
                                  outlet_temp=32000,
                                  expected_pwm=51):
             rc = False
@@ -170,28 +188,28 @@ class fscdTest():
                                  expected_pwm=51):
             rc = False
 
-        # sub-test5: pwm when all temp~[32C,42C] pwm=23 => duty_cycle=74
+        # sub-test5: pwm when all temp~[32C,42C] pwm=16 => duty_cycle=51
         if not self.run_pwm_test(userver_temp=32000,
                                  switch_temp=38000,
                                  intake_temp=42000,
                                  outlet_temp=32000,
-                                 expected_pwm=74):
+                                 expected_pwm=51):
             rc = False
 
-        # sub-test6: pwm when all temp~[40C,50C] pwm=31 => duty_cycle=100
+        # sub-test6: pwm when all temp~[40C,50C] pwm=16 => duty_cycle=51
         if not self.run_pwm_test(userver_temp=40000,
                                  switch_temp=41000,
                                  intake_temp=50000,
                                  outlet_temp=40000,
-                                 expected_pwm=100):
+                                 expected_pwm=51):
             rc = False
 
-        # sub-test7: pwm when all temp~[46C,50C] pwm=31 => duty_cycle=100
+        # sub-test7: pwm when all temp~[46C,50C] pwm=23 => duty_cycle=74
         if not self.run_pwm_test(userver_temp=46000,
                                  switch_temp=47000,
                                  intake_temp=85000,
                                  outlet_temp=46000,
-                                 expected_pwm=100):
+                                 expected_pwm=74):
             rc = False
 
         # sub-test8: At this point the system should shutdown because
@@ -216,7 +234,7 @@ class fscdTest():
                           switch_temp=41000,
                           intake_temp=44000,
                           outlet_temp=40000,
-                          expected_pwm=74)
+                          expected_pwm=51)
         self.run_shell_cmd("/usr/local/bin/wedge_power.sh on")
         time.sleep(10)
         if self.is_userver_on():
@@ -286,8 +304,10 @@ if __name__ == '__main__':
         try:
             result1 = test.run_test1()
             test.tear_down_tests()
-            result2 = test.run_test2()
-            if result1 and result2:
+            # Diabling this test because with the new apprach we do
+            # not shutdown userver for fan read failuers
+            #result2 = test.run_test2()
+            if result1:
                 print("FSCD Testing [PASSED]")
                 test.tear_down_tests()
                 exit(0)

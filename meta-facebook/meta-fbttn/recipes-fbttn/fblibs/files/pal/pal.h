@@ -38,20 +38,14 @@ extern "C" {
 
 #define MAX_NUM_FAN     2
 
-#define FRU_STATUS_GOOD   1
-#define FRU_STATUS_BAD    0
-
 #define BIC_READY 0           // BIC ready: 0; BIC NOT ready: 1
 #define BIC_NOT_READY 1
 
 #define SERVER_PWR_ON_LOCK "/var/run/server%d_power_on.lock"
 
-#define SETBIT(x, y)        (x | (1 << y))
-#define GETBIT(x, y)        ((x & (1 << y)) > y)
-#define CLEARBIT(x, y)      (x & (~(1 << y)))
-#define GETMASK(y)          (1 << y)
-
 #define MAX_NODES 4
+
+#define MAX_ERROR_CODES 256
 
 //Expander
 #define SCC_FIRST_SENSOR_NUM 96 //Expander_TEMP 0x60
@@ -109,17 +103,6 @@ enum {
   TARGET_VR_P1V05_VER,
   TARGET_VR_PVCCGBE_VER,
   TARGET_VR_PVCCSCUS_VER,
-};
-
-enum {
-  SERVER_POWER_OFF,
-  SERVER_POWER_ON,
-  SERVER_POWER_CYCLE,
-  SERVER_POWER_RESET,
-  SERVER_GRACEFUL_SHUTDOWN,
-  SERVER_12V_OFF,
-  SERVER_12V_ON,
-  SERVER_12V_CYCLE,
 };
 
 enum {
@@ -304,7 +287,7 @@ void pal_sensor_assert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t t
 void pal_sensor_deassert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh);
 void pal_post_end_chk(uint8_t *post_end_chk);
 int pal_get_fw_info(uint8_t fru, unsigned char target, unsigned char* res, unsigned char* res_len);
-int pal_get_error_code(uint8_t* data, uint8_t* error_count);
+int pal_get_error_code(uint8_t data[MAX_ERROR_CODES], uint8_t* error_count);
 int pal_post_get_buffer(uint8_t *buffer, uint8_t *buf_len);
 void pal_add_cri_sel(char *str);
 void pal_i2c_crash_assert_handle(int i2c_bus_num);

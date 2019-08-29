@@ -46,10 +46,11 @@ IMAGE_INSTALL += " \
   sensor-util \
   spatula \
   usb-console \
-  watchdog-ctrl \
   vboot-utils \
+  libncsi \
   ncsi-util \
   ncsid \
+  libpldm \
   "
 
 IMAGE_FEATURES += " \

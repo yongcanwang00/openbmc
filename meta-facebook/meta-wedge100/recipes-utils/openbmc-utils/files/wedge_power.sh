@@ -24,24 +24,23 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
 
 prog="$0"
 
-PWR_BTN_GPIO="BMC_PWR_BTN_OUT_N"
 PWR_SYSTEM_SYSFS="${SYSCPLD_SYSFS_DIR}/pwr_cyc_all_n"
 PWR_USRV_RST_SYSFS="${SYSCPLD_SYSFS_DIR}/usrv_rst_n"
 PWR_TH_RST_SYSFS="${SYSCPLD_SYSFS_DIR}/th_sys_rst_n"
-MAIN_PWR="${SYSCPLD_SYSFS_DIR}/pwr_main_n"
+ALT_SYSRESET_SYSFS="/sys/bus/i2c/drivers/pwr1014a/2-003a/mod_hard_powercycle"
 
 usage() {
     echo "Usage: $prog <command> [command options]"
     echo
     echo "Commands:"
-    echo "  status: Get the current microserver power status"
+    echo "  status: Get the current power status"
     echo
-    echo "  on: Power on microserver if not powered on already"
+    echo "  on: Power on microserver and main power if not powered on already"
     echo "    options:"
     echo "      -f: Re-do power on sequence no matter if microserver has "
     echo "          been powered on or not."
     echo
-    echo "  off: Power off microserver ungracefully"
+    echo "  off: Power off microserver and main power ungracefully"
     echo
     echo "  reset: Power reset microserver ungracefully"
     echo "    options:"
@@ -49,8 +48,8 @@ usage() {
     echo
 }
 
-main_power_status() {
-  status=$(cat $MAIN_PWR | head -1 )
+is_main_power_on() {
+  status=$(cat $PWR_MAIN_SYSFS | head -1 )
   if [ "$status" == "0x1" ]; then
       return 0            # powered on
   else
@@ -59,49 +58,38 @@ main_power_status() {
 }
 
 do_status() {
-    echo -n "Microserver power is "
     return_code=0
+
+    echo -n "Microserver power is "
     if wedge_is_us_on; then
         echo "on"
     else
         echo "off"
         return_code=1
     fi
-    main_power_status
-    rc=$?
-    if [ $rc == "0" ]; then
-        echo "System main power is on"
+
+    echo -n "System main power is "
+    if is_main_power_on; then
+        echo "on"
     else
-        echo "System main power is off"
+        echo "off"
         return_code=1
     fi
+
     return $return_code
 }
 
 do_on_com_e() {
     echo 1 > $PWR_USRV_SYSFS
-    return $?
 }
 
 do_on_main_pwr() {
-  main_power_status
-  rc=$?
-  if [ $rc == "1" ]; then
-    echo 1 > $MAIN_PWR
-    ret=$?
-    if [ $ret -eq 0 ]; then
-      echo "Turning on system main power"
-      logger "Successfully power on main power"
-      return 0
-    else
-      return 1
-    fi
-  fi
-  return 0
+    echo 1 > $PWR_MAIN_SYSFS
 }
 
 do_on() {
     local force opt ret
+    ret=0
     force=0
     while getopts "f" opt; do
         case $opt in
@@ -115,46 +103,42 @@ do_on() {
 
         esac
     done
-    echo -n "Power on microserver ..."
+
     if [ $force -eq 0 ]; then
         # need to check if uS is on or not
         if wedge_is_us_on 10 "."; then
-            echo " Already on. Skip!"
+            echo "Skipping because microserver is already on. Use -f to force."
             return 1
         fi
     fi
 
     # reset TH
     reset_brcm.sh
+
     # power on sequence
-    do_on_main_pwr
-    do_on_com_e
-    ret=$?
-    if [ $ret -eq 0 ]; then
-        echo " Done"
-	logger "Successfully power on micro-server"
-    else
-        echo " Failed"
-        logger "Failed to power on micro-server"
+    if ! is_main_power_on; then
+      try_and_log "turning on main power" do_on_main_pwr || ret=1
     fi
+    try_and_log "powering on microserver" do_on_com_e || ret=1
+
     return $ret
 }
 
 do_off_com_e() {
     echo 0 > $PWR_USRV_SYSFS
-    return $?
+}
+
+do_off_main_pwr() {
+    echo 0 > $PWR_MAIN_SYSFS
 }
 
 do_off() {
     local ret
-    echo -n "Power off microserver ..."
-    do_off_com_e
-    ret=$?
-    if [ $ret -eq 0 ]; then
-        echo " Done"
-    else
-        echo " Failed"
-    fi
+    ret=0
+
+    try_and_log "powering off microserver" do_off_com_e || ret=1
+    try_and_log "turning off main power" do_off_main_pwr || ret=1
+
     return $ret
 }
 
@@ -186,6 +170,11 @@ do_reset() {
         echo 0 > $PWR_SYSTEM_SYSFS
         usleep $pulse_us
         echo 1 > $PWR_SYSTEM_SYSFS
+        logger -s "wedge_power.sh reset -s through CPLD failed. The system will wait for 5 more seconds."
+        logger -s "Then, it will reset Using pwr1014a instead."
+        sleep 5
+        echo 0 > $ALT_SYSRESET_SYSFS
+        sleep 1
     else
         if ! wedge_is_us_on; then
             echo "Power resetting microserver that is powered off has no effect."
@@ -230,5 +219,3 @@ case "$command" in
         exit -1
         ;;
 esac
-
-exit $?

@@ -113,9 +113,8 @@ main(int argc, char **argv) {
   uint8_t snr_num = 0;
   uint8_t thresh_type = 0;
   float threshold_value;
-  int errno, ret = -1;
-  char cmd[128] = {0};  
-  char *fru_name = NULL;
+  int ret = -1;
+  char *end = NULL;
 
   // Check for border conditions
   if ((argc != 3) && (argc != 6)) {
@@ -154,8 +153,19 @@ main(int argc, char **argv) {
     }
 
     errno = 0;
-    snr_num = (uint8_t) strtol(argv[3], NULL, 0);
-    threshold_value =  atof(argv[5]);
+    ret = strtol(argv[3], &end, 0);
+    if (errno || *end || (ret < 0) || (ret > 0xFF)) {
+      print_usage_help();
+      return -1;
+    }
+    snr_num = (uint8_t)ret;
+
+    errno = 0;
+    threshold_value = strtof(argv[5], &end);
+    if (errno || *end) {
+      print_usage_help();
+      return -1;
+    }
 
     if (FRU_ALL == fru) { // For FRU ALL
       for (fru = FRU_ALL+1; fru <= MAX_NUM_FRUS; fru++) {
@@ -178,34 +188,18 @@ main(int argc, char **argv) {
         printf("Fail to set sensor 0x%x threshold for fru%d\n", snr_num, fru);
     }
   } else if (!(strcmp(argv[2], "--clear"))) {
-    fru_name = argv[1];
     if (FRU_ALL == fru) { // For FRU ALL
       ret = 0;
       for (fru = FRU_ALL+1; fru <= MAX_NUM_FRUS; fru++) {
         ret |= clear_thresh_value_setting(fru);
         if (ret < 0) {
           printf("Fail to clear threshold for fru%d\n", fru);
-        } 
-      }
-
-      if (0 == ret) {
-        // sleep 6 seconds to avoid test deassert events
-        sleep(6);
-        memset(cmd, 0, sizeof(cmd));
-        sprintf(cmd,"/usr/local/bin/log-util %s --clear", fru_name);
-        system(cmd);
+        }
       }
     } else {
       ret = clear_thresh_value_setting(fru);
       if (ret < 0) {
         printf("Fail to clear threshold for fru%d\n", fru);
-      } else {
-        // sleep 6 seconds to avoid test deassert events
-        sleep(6);
-
-        memset(cmd, 0, sizeof(cmd));
-        sprintf(cmd,"/usr/local/bin/log-util %s --clear", fru_name);
-        system(cmd);
       }
     }
   } else {

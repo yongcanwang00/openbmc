@@ -22,11 +22,15 @@ PR = "r1"
 LICENSE = "GPLv2"
 LIC_FILES_CHKSUM = "file://ipmid.c;beginline=8;endline=20;md5=da35978751a9d71b73679307c4d296ec"
 
-LDFLAGS += "-lpal -lkv -lsdr -lfruid "
+LDFLAGS += "-lpal -lkv -lsdr -lfruid -lipc "
 CFLAGS += "-Wall -Werror "
+IPMI_FEATURE_FLAGS ?= "-DSENSOR_DISCRETE_US_STATUS -DSENSOR_DISCRETE_SEL_STATUS -DSENSOR_DISCRETE_WDT -DSENSOR_DISCRETE_PWR_STATUS -DSENSOR_DISCRETE_DIMM_HOT -DSENSOR_DISCRETE_PMBUS_STATUS"
+CFLAGS += "${IPMI_FEATURE_FLAGS}"
 
 SRC_URI = "file://Makefile \
            file://ipmid.c \
+           file://lan.c \
+           file://sensor.c \
            file://timestamp.c \
            file://timestamp.h \
            file://sel.c \
@@ -35,16 +39,43 @@ SRC_URI = "file://Makefile \
            file://sdr.h \
            file://sensor.h \
            file://fruid.h \
+           file://fruid.c \
            file://usb-dbg.c \
            file://usb-dbg.h \
            file://usb-dbg-conf.c \
            file://usb-dbg-conf.h \
            file://BBV.c \
            file://BBV.h \
+           file://run-ipmid.sh \
+           file://setup-ipmid.sh \
           "
 
-DEPENDS += " libpal libsdr libfruid "
-RDEPENDS_${PN} += " libpal libsdr libfruid "
+S = "${WORKDIR}"
+
+do_install() {
+  dst="${D}/usr/local/fbpackages/${pkgdir}"
+  bin="${D}/usr/local/bin"
+  install -d $dst
+  install -d $bin
+  install -m 755 ipmid ${dst}/ipmid
+  ln -snf ../fbpackages/${pkgdir}/ipmid ${bin}/ipmid
+  install -d ${D}${sysconfdir}/init.d
+  install -d ${D}${sysconfdir}/rcS.d
+  install -d ${D}${sysconfdir}/sv
+  install -d ${D}${sysconfdir}/sv/ipmid
+  install -d ${D}${sysconfdir}/ipmid
+  install -m 755 setup-ipmid.sh ${D}${sysconfdir}/init.d/setup-ipmid.sh
+  install -m 755 run-ipmid.sh ${D}${sysconfdir}/sv/ipmid/run
+  update-rc.d -r ${D} setup-ipmid.sh start 64 5 .
+}
+
+FBPACKAGEDIR = "${prefix}/local/fbpackages"
+
+FILES_${PN} = "${FBPACKAGEDIR}/ipmid ${prefix}/local/bin ${sysconfdir} "
+
+LDFLAGS += " -lobmc-i2c "
+DEPENDS += " libpal libsdr libkv libfruid libipc libobmc-i2c libipmi libipmb libfruid update-rc.d-native"
+RDEPENDS_${PN} += " libpal libsdr libfruid libipc libkv libipmi libipmb libfruid libobmc-i2c "
 
 binfiles = "ipmid"
 

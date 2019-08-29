@@ -35,14 +35,6 @@ extern "C" {
 
 #define MAX_NUM_FAN     2
 
-#define FRU_STATUS_GOOD   1
-#define FRU_STATUS_BAD    0
-
-#define SETBIT(x, y)        (x | (1 << y))
-#define GETBIT(x, y)        ((x & (1 << y)) > y)
-#define CLEARBIT(x, y)      (x & (~(1 << y)))
-#define GETMASK(y)          (1 << y)
-
 #define MAX_NODES 4
 
 #define MAX_NUM_FRUS 5
@@ -76,23 +68,12 @@ extern const uint8_t nic_sensor_list[];
 enum
 {
   FOUND_AVA_DEVICE = 0x1,
+  FOUND_RETIMER_DEVICE = 0x2,
 };
 
 enum {
   USB_MUX_OFF,
   USB_MUX_ON,
-};
-
-enum {
-  SERVER_POWER_OFF,
-  SERVER_POWER_ON,
-  SERVER_POWER_CYCLE,
-  SERVER_POWER_RESET,
-  SERVER_GRACEFUL_SHUTDOWN,
-  /* Not supported in FBTP */
-  SERVER_12V_OFF,
-  SERVER_12V_ON,
-  SERVER_12V_CYCLE,
 };
 
 enum {
@@ -293,10 +274,14 @@ enum {
   SLOT_CFG_EMPTY    = 0x03,
 };
 
-typedef struct _sensor_info_t {
-  bool valid;
-  sdr_full_t sdr;
-} sensor_info_t;
+enum {
+  BOOT_DEVICE_IPV4     = 0x1,
+  BOOT_DEVICE_HDD      = 0x2,
+  BOOT_DEVICE_CDROM    = 0x3,
+  BOOT_DEVICE_OTHERS   = 0x4,
+  BOOT_DEVICE_IPV6     = 0x9,
+  BOOT_DEVICE_RESERVED = 0xff,
+};
 
 int pal_get_platform_name(char *name);
 int pal_get_num_slots(uint8_t *num);
@@ -373,7 +358,7 @@ int pal_PBO(void);
 void pal_sensor_assert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh);
 void pal_sensor_deassert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh);
 void pal_post_end_chk(uint8_t *post_end_chk);
-int pal_get_fw_info(unsigned char target, unsigned char* res, unsigned char* res_len);
+int pal_get_fw_info(uint8_t fru, unsigned char target, unsigned char* res, unsigned char* res_len);
 void pal_add_cri_sel(char *str);
 uint8_t pal_get_status(void);
 void pal_get_chassis_status(uint8_t slot, uint8_t *req_data, uint8_t *res_data, uint8_t *res_len);
@@ -384,14 +369,20 @@ int pal_add_i2c_device(uint8_t bus, char *device_name, uint8_t slave_addr);
 int pal_del_i2c_device(uint8_t bus, uint8_t slave_addr);
 int pal_is_fru_on_riser_card(uint8_t riser_slot, uint8_t *device_type);
 bool pal_is_ava_card(uint8_t riser_slot);
+bool pal_is_retimer_card ( uint8_t riser_slot );
+bool pal_is_pcie_ssd_card( uint8_t riser_slot );
 int pal_get_machine_configuration(char *conf);
 void pal_check_power_sts(void);
 int notify_BBV_ipmb_offline_online(uint8_t on_off, int off_sec);
 bool pal_is_BBV_prsnt();
-int pal_CPU_error_num_chk(void);
+int pal_CPU_error_num_chk(bool is_caterr);
 void pal_second_crashdump_chk(void);
 int pal_mmap (uint32_t base, uint8_t offset, int option, uint32_t para);
+int pal_control_mux_to_target_ch(uint8_t channel, uint8_t bus, uint8_t mux_addr);
 int pal_uart_switch_for_led_ctrl (void);
+int pal_riser_mux_switch (uint8_t riser_slot);
+int pal_riser_mux_release (void);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

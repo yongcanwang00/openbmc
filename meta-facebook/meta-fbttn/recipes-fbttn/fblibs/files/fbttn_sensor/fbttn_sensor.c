@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <syslog.h>
 #include <openbmc/obmc-i2c.h>
+#include <openbmc/kv.h>
 #include "fbttn_sensor.h"
 //For Kernel 2.6 -> 4.1
 #define MEZZ_TEMP_DEVICE "/sys/devices/platform/ast-i2c.12/i2c-12/12-001f/hwmon/hwmon*"
@@ -462,21 +463,21 @@ sensor_thresh_array_init() {
       150, 0, 0, 0, 0, 0, 0, 0);
   //DPB FAN
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN1_FRONT,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN1_REAR,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN2_FRONT,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN2_REAR,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN3_FRONT,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN3_REAR,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN4_FRONT,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_FAN4_REAR,
-      13000 /* ucr */, 10000 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
+      13500 /* ucr */, 13200 /* unc */, 0, 1200/* lcr */, 2000 /* lnc */, 0, 0, 0);
   //DPB HSC
   assign_sensor_threshold(FRU_DPB, DPB_SENSOR_HSC_POWER,
       885, 0, 0, 0, 0, 0, 0, 0);
@@ -1670,8 +1671,9 @@ fbttn_sensor_name(uint8_t fru, uint8_t sensor_num, char *name) {
 
 
 int
-fbttn_sensor_read(uint8_t fru, uint8_t sensor_num, void *value, uint8_t status) {
+fbttn_sensor_read(uint8_t fru, uint8_t sensor_num, void *value, uint8_t status, char *key) {
 
+  char cvalue[MAX_VALUE_LEN] = {0};
   float volt;
   float curr;
   int ret;
@@ -1779,44 +1781,22 @@ fbttn_sensor_read(uint8_t fru, uint8_t sensor_num, void *value, uint8_t status) 
       break;
 
     case FRU_DPB:
-      switch(sensor_num) {
-        case DPB_SENSOR_FAN1_FRONT:
-        case DPB_SENSOR_FAN2_FRONT:
-        case DPB_SENSOR_FAN3_FRONT:
-        case DPB_SENSOR_FAN4_FRONT:
-        case DPB_SENSOR_FAN1_REAR:
-        case DPB_SENSOR_FAN2_REAR:
-        case DPB_SENSOR_FAN3_REAR:
-        case DPB_SENSOR_FAN4_REAR:
-          *(float *) value = 0;
-        return 0;
-        case DPB_SENSOR_HSC_POWER:
-            return read_hsc_value(HSC_IN_POWER, HSC_DEVICE_DPB, EXP_R_SENSE, (float *) value);
-        case DPB_SENSOR_HSC_VOLT:
-            return read_hsc_value(HSC_IN_VOLT, HSC_DEVICE_DPB, EXP_R_SENSE, (float *) value);
-        case DPB_SENSOR_HSC_CURR:
-            return read_hsc_value(HSC_OUT_CURR, HSC_DEVICE_DPB, EXP_R_SENSE, (float *) value);
-
-      }
-      break;
-
     case FRU_SCC:
-      switch(sensor_num) {
-        case SCC_SENSOR_EXPANDER_TEMP:
-        case SCC_SENSOR_IOC_TEMP:
-        case SCC_SENSOR_HSC_POWER:
-        case SCC_SENSOR_HSC_CURR:
-        case SCC_SENSOR_HSC_VOLT:
-        case SCC_SENSOR_P3V3_SENSE:
-        case SCC_SENSOR_P1V8_E_SENSE:
-        case SCC_SENSOR_P1V5_E_SENSE:
-        case SCC_SENSOR_P0V9_SENSE:
-        case SCC_SENSOR_P1V8_C_SENSE:
-        case SCC_SENSOR_P1V5_C_SENSE:
-        case SCC_SENSOR_P0V975_SENSE:
-          *(float *) value = 0;
-          return 0;
+      // DPB and SCC sensors' value are refreshed and store into cache by pal_expander_sensor_check().
+      // The pal_expander_sensor_check() is called before this function.
+      // So here just get cache value then change its type to float.
+      ret = pal_get_edb_value(key, cvalue);
+      if (ret < 0) {
+        syslog(LOG_WARNING, "%s: pal_get_edb_value failed for fru %d, sensor number: 0x%x", __func__, fru, sensor_num);
+        return ret;
       }
+
+      if (strncmp(cvalue, "NA", sizeof(cvalue)) == 0) {
+        return READING_NA;
+      }
+
+      *(float *) value = atof(cvalue);
+      return ret;
       break;
 
     case FRU_NIC:

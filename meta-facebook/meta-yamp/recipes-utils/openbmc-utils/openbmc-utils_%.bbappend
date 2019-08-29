@@ -29,7 +29,13 @@ SRC_URI += "file://bios_util.sh \
             file://wedge_power.sh \
             file://wedge_us_mac.sh \
             file://pim_enable.sh \
+            file://dpm_ver.sh \
+            file://dump_pim_serials.sh \
             file://yamp_bios.layout \
+            file://showtech.sh \
+            file://seutil \
+            file://peutil \
+            file://scdinfo \
            "
 
 OPENBMC_UTILS_FILES += " \
@@ -40,7 +46,13 @@ OPENBMC_UTILS_FILES += " \
     reset_brcm.sh \
     wedge_power.sh \
     wedge_us_mac.sh \
+    dpm_ver.sh \
+    dump_pim_serials.sh \
     pim_enable.sh \
+    showtech.sh \
+    seutil \
+    peutil \
+    scdinfo \
     "
 
 DEPENDS_append = " update-rc.d-native"
@@ -63,10 +75,12 @@ do_install_board() {
     install -m 755 setup_i2c.sh ${D}${sysconfdir}/init.d/setup_i2c.sh
     update-rc.d -r ${D} setup_i2c.sh start 60 S .
 
-    # networking is done after rcS, any start level within rcS
-    # for mac fixup should work
+    # "eth0_mac_fixup.sh" needs to be executed after "networking start"
+    # (runlevel 5, order #1), but before "setup-dhc6.sh" (runlevel 5,
+    # order #3): this is to make sure ipv6 link-local address can be
+    # derivied from the correct MAC address.
     install -m 755 eth0_mac_fixup.sh ${D}${sysconfdir}/init.d/eth0_mac_fixup.sh
-    update-rc.d -r ${D} eth0_mac_fixup.sh start 70 S .
+    update-rc.d -r ${D} eth0_mac_fixup.sh start 2 2 3 4 5 .
 
     install -m 755 setup_board.sh ${D}${sysconfdir}/init.d/setup_board.sh
     update-rc.d -r ${D} setup_board.sh start 80 S .

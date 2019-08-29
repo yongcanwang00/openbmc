@@ -20,5 +20,8 @@
   },
   "postcode": {
     "supported": true
+  },
+  "tpm_presence": {
+    "supported": false
   }
 }

@@ -28,6 +28,7 @@
 #define FIELD_LEN(x)      (x & ~(0x03 << 6))
 #define FIELD_EMPTY       "N/A"
 #define NO_MORE_DATA_BYTE 0xC1
+#define MAX_FIELD_LENGTH  63  // 6-bit for length
 
 /* Unix time difference between 1970 and 1996. */
 #define UNIX_TIMESTAMP_1996   820454400
@@ -279,6 +280,7 @@ void free_fruid_info(fruid_info_t * fruid)
 
   if (fruid->board.flag) {
     free(fruid->board.mfg_time_str);
+    free(fruid->board.mfg_time);
     free(fruid->board.mfg);
     free(fruid->board.name);
     free(fruid->board.serial);
@@ -312,33 +314,63 @@ static void init_fruid_info(fruid_info_t * fruid)
   fruid->board.flag = 0;
   fruid->product.flag = 0;
   fruid->chassis.type_str = NULL;
+  fruid->chassis.part_type_len = 0;
   fruid->chassis.part = NULL;
+  fruid->chassis.serial_type_len = 0;
   fruid->chassis.serial = NULL;
+  fruid->chassis.custom1_type_len = 0;
   fruid->chassis.custom1 = NULL;
+  fruid->chassis.custom2_type_len = 0;
   fruid->chassis.custom2 = NULL;
+  fruid->chassis.custom3_type_len = 0;
   fruid->chassis.custom3 = NULL;
+  fruid->chassis.custom4_type_len = 0;
   fruid->chassis.custom4 = NULL;
+  fruid->chassis.chksum = 0;
   fruid->board.mfg_time_str = NULL;
+  fruid->board.mfg_time = NULL;
+  fruid->board.mfg_type_len = 0;
   fruid->board.mfg = NULL;
+  fruid->board.name_type_len = 0;
   fruid->board.name = NULL;
+  fruid->board.serial_type_len = 0;
   fruid->board.serial = NULL;
+  fruid->board.part_type_len = 0;
   fruid->board.part = NULL;
+  fruid->board.fruid_type_len = 0;
   fruid->board.fruid = NULL;
+  fruid->board.custom1_type_len = 0;
   fruid->board.custom1 = NULL;
+  fruid->board.custom2_type_len = 0;
   fruid->board.custom2 = NULL;
+  fruid->board.custom3_type_len = 0;
   fruid->board.custom3 = NULL;
+  fruid->board.custom4_type_len = 0;
   fruid->board.custom4 = NULL;
+  fruid->board.chksum = 0;
+  fruid->product.mfg_type_len = 0;
   fruid->product.mfg = NULL;
+  fruid->product.name_type_len = 0;
   fruid->product.name = NULL;
+  fruid->product.part_type_len = 0;
   fruid->product.part = NULL;
+  fruid->product.version_type_len = 0;
   fruid->product.version = NULL;
+  fruid->product.serial_type_len = 0;
   fruid->product.serial = NULL;
+  fruid->product.asset_tag_type_len = 0;
   fruid->product.asset_tag = NULL;
+  fruid->product.fruid_type_len = 0;
   fruid->product.fruid = NULL;
+  fruid->product.custom1_type_len = 0;
   fruid->product.custom1 = NULL;
+  fruid->product.custom2_type_len = 0;
   fruid->product.custom2 = NULL;
+  fruid->product.custom3_type_len = 0;
   fruid->product.custom3 = NULL;
+  fruid->product.custom4_type_len = 0;
   fruid->product.custom4 = NULL;
+  fruid->product.chksum = 0;
 }
 
 /* Parse the Product area data */
@@ -375,42 +407,50 @@ int parse_fruid_area_product(uint8_t * product,
     return EBADF;
   }
 
+  fruid_product->mfg_type_len = product[index];
   fruid_product->mfg = _fruid_area_field_read(&product[index]);
   if (fruid_product->mfg == NULL)
     return ENOMEM;
   index += FIELD_LEN(product[index]) + 1;
 
+  fruid_product->name_type_len = product[index];
   fruid_product->name = _fruid_area_field_read(&product[index]);
   if (fruid_product->name == NULL)
     return ENOMEM;
   index += FIELD_LEN(product[index]) + 1;
 
+  fruid_product->part_type_len = product[index];
   fruid_product->part = _fruid_area_field_read(&product[index]);
   if (fruid_product->part == NULL)
     return ENOMEM;
   index += FIELD_LEN(product[index]) + 1;
 
+  fruid_product->version_type_len = product[index];
   fruid_product->version = _fruid_area_field_read(&product[index]);
   if (fruid_product->version == NULL)
     return ENOMEM;
   index += FIELD_LEN(product[index]) + 1;
 
+  fruid_product->serial_type_len = product[index];
   fruid_product->serial = _fruid_area_field_read(&product[index]);
   if (fruid_product->serial == NULL)
     return ENOMEM;
   index += FIELD_LEN(product[index]) + 1;
 
+  fruid_product->asset_tag_type_len = product[index];
   fruid_product->asset_tag = _fruid_area_field_read(&product[index]);
   if (fruid_product->asset_tag == NULL)
     return ENOMEM;
   index += FIELD_LEN(product[index]) + 1;
 
+  fruid_product->fruid_type_len = product[index];
   fruid_product->fruid = _fruid_area_field_read(&product[index]);
   if (fruid_product->fruid == NULL)
     return ENOMEM;
   index += FIELD_LEN(product[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_product->custom1_type_len = product[index];
   if (product[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_product->custom1 = _fruid_area_field_read(&product[index]);
@@ -419,6 +459,7 @@ int parse_fruid_area_product(uint8_t * product,
   index += FIELD_LEN(product[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_product->custom2_type_len = product[index];
   if (product[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_product->custom2 = _fruid_area_field_read(&product[index]);
@@ -427,6 +468,7 @@ int parse_fruid_area_product(uint8_t * product,
   index += FIELD_LEN(product[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_product->custom3_type_len = product[index];
   if (product[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_product->custom3 = _fruid_area_field_read(&product[index]);
@@ -435,6 +477,7 @@ int parse_fruid_area_product(uint8_t * product,
   index += FIELD_LEN(product[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_product->custom4_type_len = product[index];
   if (product[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_product->custom4 = _fruid_area_field_read(&product[index]);
@@ -478,6 +521,9 @@ int parse_fruid_area_board(uint8_t * board,
     return EBADF;
   }
 
+  fruid_board->mfg_time = (uint8_t *) malloc(3*sizeof(uint8_t));
+  if (fruid_board->mfg_time == NULL)
+    return ENOMEM;
   for (i = 0; i < 3; i++) {
     fruid_board->mfg_time[i] = board[index++];
   }
@@ -486,32 +532,38 @@ int parse_fruid_area_board(uint8_t * board,
   if (fruid_board->mfg_time_str == NULL)
     return ENOMEM;
 
+  fruid_board->mfg_type_len = board[index];
   fruid_board->mfg = _fruid_area_field_read(&board[index]);
   if (fruid_board->mfg == NULL)
     return ENOMEM;
   index += FIELD_LEN(board[index]) + 1;
 
+  fruid_board->name_type_len = board[index];
   fruid_board->name = _fruid_area_field_read(&board[index]);
   if (fruid_board->name == NULL)
     return ENOMEM;
   index += FIELD_LEN(board[index]) + 1;
 
+  fruid_board->serial_type_len = board[index];
   fruid_board->serial = _fruid_area_field_read(&board[index]);
   if (fruid_board->serial == NULL)
     return ENOMEM;
   index += FIELD_LEN(board[index]) + 1;
 
+  fruid_board->part_type_len = board[index];
   fruid_board->part = _fruid_area_field_read(&board[index]);
   if (fruid_board->part == NULL)
     return ENOMEM;
   index += FIELD_LEN(board[index]) + 1;
 
+  fruid_board->fruid_type_len = board[index];
   fruid_board->fruid = _fruid_area_field_read(&board[index]);
   if (fruid_board->fruid == NULL)
     return ENOMEM;
   index += FIELD_LEN(board[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_board->custom1_type_len = board[index];
   if (board[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_board->custom1 = _fruid_area_field_read(&board[index]);
@@ -520,6 +572,7 @@ int parse_fruid_area_board(uint8_t * board,
   index += FIELD_LEN(board[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_board->custom2_type_len = board[index];
   if (board[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_board->custom2 = _fruid_area_field_read(&board[index]);
@@ -528,6 +581,7 @@ int parse_fruid_area_board(uint8_t * board,
   index += FIELD_LEN(board[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_board->custom3_type_len = board[index];
   if (board[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_board->custom3 = _fruid_area_field_read(&board[index]);
@@ -536,6 +590,7 @@ int parse_fruid_area_board(uint8_t * board,
   index += FIELD_LEN(board[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_board->custom4_type_len = board[index];
   if (board[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_board->custom4 = _fruid_area_field_read(&board[index]);
@@ -582,17 +637,20 @@ int parse_fruid_area_chassis(uint8_t * chassis,
   if (fruid_chassis->type_str == NULL)
     return ENOMSG;
 
+  fruid_chassis->part_type_len = chassis[index];
   fruid_chassis->part = _fruid_area_field_read(&chassis[index]);
   if (fruid_chassis->part == NULL)
     return ENOMEM;
   index += FIELD_LEN(chassis[index]) + 1;
 
+  fruid_chassis->serial_type_len = chassis[index];
   fruid_chassis->serial = _fruid_area_field_read(&chassis[index]);
   if (fruid_chassis->serial == NULL)
     return ENOMEM;
   index += FIELD_LEN(chassis[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_chassis->custom1_type_len = chassis[index];
   if (chassis[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_chassis->custom1 = _fruid_area_field_read(&chassis[index]);
@@ -601,6 +659,7 @@ int parse_fruid_area_chassis(uint8_t * chassis,
   index += FIELD_LEN(chassis[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_chassis->custom2_type_len = chassis[index];
   if (chassis[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_chassis->custom2 = _fruid_area_field_read(&chassis[index]);
@@ -609,6 +668,7 @@ int parse_fruid_area_chassis(uint8_t * chassis,
   index += FIELD_LEN(chassis[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_chassis->custom3_type_len = chassis[index];
   if (chassis[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_chassis->custom3 = _fruid_area_field_read(&chassis[index]);
@@ -617,6 +677,7 @@ int parse_fruid_area_chassis(uint8_t * chassis,
   index += FIELD_LEN(chassis[index]) + 1;
 
   /* Check if this field was last and there is no more custom data */
+  fruid_chassis->custom4_type_len = chassis[index];
   if (chassis[index] == NO_MORE_DATA_BYTE)
     return 0;
   fruid_chassis->custom4 = _fruid_area_field_read(&chassis[index]);
@@ -682,13 +743,23 @@ int populate_fruid_info(fruid_eeprom_t * fruid_eeprom, fruid_info_t * fruid)
     ret = parse_fruid_area_chassis(fruid_eeprom->chassis, &fruid_chassis);
     if (!ret) {
       fruid->chassis.flag = 1;
+      fruid->chassis.format_ver = fruid_chassis.format_ver;
+      fruid->chassis.area_len = fruid_chassis.area_len;
+      fruid->chassis.type = fruid_chassis.type;
       fruid->chassis.type_str = fruid_chassis.type_str;
+      fruid->chassis.part_type_len = fruid_chassis.part_type_len;
       fruid->chassis.part = fruid_chassis.part;
+      fruid->chassis.serial_type_len = fruid_chassis.serial_type_len;
       fruid->chassis.serial = fruid_chassis.serial;
+      fruid->chassis.custom1_type_len = fruid_chassis.custom1_type_len;
       fruid->chassis.custom1 = fruid_chassis.custom1;
+      fruid->chassis.custom2_type_len = fruid_chassis.custom2_type_len;
       fruid->chassis.custom2 = fruid_chassis.custom2;
+      fruid->chassis.custom3_type_len = fruid_chassis.custom3_type_len;
       fruid->chassis.custom3 = fruid_chassis.custom3;
+      fruid->chassis.custom4_type_len = fruid_chassis.custom4_type_len;
       fruid->chassis.custom4 = fruid_chassis.custom4;
+      fruid->chassis.chksum = fruid_chassis.chksum;
     } else
       return ret;
   }
@@ -698,16 +769,30 @@ int populate_fruid_info(fruid_eeprom_t * fruid_eeprom, fruid_info_t * fruid)
     ret = parse_fruid_area_board(fruid_eeprom->board, &fruid_board);
     if (!ret) {
       fruid->board.flag = 1;
+      fruid->board.format_ver = fruid_board.format_ver;
+      fruid->board.area_len = fruid_board.area_len;
+      fruid->board.lang_code = fruid_board.lang_code;
+      fruid->board.mfg_time = fruid_board.mfg_time;
       fruid->board.mfg_time_str = fruid_board.mfg_time_str;
+      fruid->board.mfg_type_len = fruid_board.mfg_type_len;
       fruid->board.mfg = fruid_board.mfg;
+      fruid->board.name_type_len = fruid_board.name_type_len;
       fruid->board.name = fruid_board.name;
+      fruid->board.serial_type_len = fruid_board.serial_type_len;
       fruid->board.serial = fruid_board.serial;
+      fruid->board.part_type_len = fruid_board.part_type_len;
       fruid->board.part = fruid_board.part;
+      fruid->board.fruid_type_len = fruid_board.fruid_type_len;
       fruid->board.fruid = fruid_board.fruid;
+      fruid->board.custom1_type_len = fruid_board.custom1_type_len;
       fruid->board.custom1 = fruid_board.custom1;
+      fruid->board.custom2_type_len = fruid_board.custom2_type_len;
       fruid->board.custom2 = fruid_board.custom2;
+      fruid->board.custom3_type_len = fruid_board.custom3_type_len;
       fruid->board.custom3 = fruid_board.custom3;
+      fruid->board.custom4_type_len = fruid_board.custom4_type_len;
       fruid->board.custom4 = fruid_board.custom4;
+      fruid->board.chksum = fruid_board.chksum;
     } else
       return ret;
   }
@@ -717,17 +802,32 @@ int populate_fruid_info(fruid_eeprom_t * fruid_eeprom, fruid_info_t * fruid)
     ret = parse_fruid_area_product(fruid_eeprom->product, &fruid_product);
     if (!ret) {
       fruid->product.flag = 1;
+      fruid->product.format_ver = fruid_product.format_ver;
+      fruid->product.area_len = fruid_product.area_len;
+      fruid->product.lang_code = fruid_product.lang_code;
+      fruid->product.mfg_type_len = fruid_product.mfg_type_len;
       fruid->product.mfg = fruid_product.mfg;
+      fruid->product.name_type_len = fruid_product.name_type_len;
       fruid->product.name = fruid_product.name;
+      fruid->product.part_type_len = fruid_product.part_type_len;
       fruid->product.part = fruid_product.part;
+      fruid->product.version_type_len = fruid_product.version_type_len;
       fruid->product.version = fruid_product.version;
+      fruid->product.serial_type_len = fruid_product.serial_type_len;
       fruid->product.serial = fruid_product.serial;
+      fruid->product.asset_tag_type_len = fruid_product.asset_tag_type_len;
       fruid->product.asset_tag = fruid_product.asset_tag;
+      fruid->product.fruid_type_len = fruid_product.fruid_type_len;
       fruid->product.fruid = fruid_product.fruid;
+      fruid->product.custom1_type_len = fruid_product.custom1_type_len;
       fruid->product.custom1 = fruid_product.custom1;
+      fruid->product.custom2_type_len = fruid_product.custom2_type_len;
       fruid->product.custom2 = fruid_product.custom2;
+      fruid->product.custom3_type_len = fruid_product.custom3_type_len;
       fruid->product.custom3 = fruid_product.custom3;
+      fruid->product.custom4_type_len = fruid_product.custom4_type_len;
       fruid->product.custom4 = fruid_product.custom4;
+      fruid->product.chksum = fruid_product.chksum;
     } else
       return ret;
   }
@@ -787,7 +887,6 @@ int fruid_parse(const char * bin, fruid_info_t * fruid)
 
   /* Free the eeprom malloced memory */
   free(eeprom);
-
   return ret;
 }
 
@@ -822,3 +921,640 @@ int fruid_parse_eeprom(const uint8_t * eeprom, int eeprom_len, fruid_info_t * fr
 
   return ret;
 }
+
+static 
+char *extract_content(const char *content) {
+  int i = 0, j = 0;
+  char *tmp_str = (char *) malloc ((strlen(content) + 1) * sizeof(char));
+  
+  while(content[i] != '\0') {
+    if(content[i] != '\"') {
+      tmp_str[j++] = content[i];  
+    }
+    i++;
+  }
+  tmp_str[j] = '\0';
+
+  return tmp_str;
+}
+
+static
+int calculate_chksum(uint8_t * start_offset, uint8_t area_length) {
+
+  uint8_t chksum = 0;
+  int i, ret;
+
+  for (i = 0; i < area_length - 1; i++) {
+    chksum += start_offset[i];
+  }
+
+  /* Zero checksum calculation */
+  chksum = ~(chksum) + 1;
+
+  /* Update new checksum */
+  start_offset[area_length - 1] = chksum; 
+
+  ret = verify_chksum((uint8_t *) start_offset, area_length, start_offset[area_length - 1]);
+      
+  return ret;
+}
+
+static
+int set_mfg_time( uint8_t * time_field , char * set_time) {
+  uint32_t time_value; 
+  uint32_t datetime;
+  time_t ipmi_time;
+  char *ptr = NULL;
+
+  if (!strcmp(set_time, "")) {   //Invalid time setting
+    return -1;
+  }
+
+  strtol(set_time, &ptr, 10);
+
+  if(strcmp(ptr, "")) {       //Invalid time setting
+    return -1;
+  }
+
+  time_value = (uint32_t)atoi(set_time);
+   
+  ipmi_time = UNIX_TIMESTAMP_1996;
+
+  datetime = (time_value - ipmi_time) / 60;
+
+  time_field[0] = (datetime & 0xFF);
+  time_field[1] = ((datetime >> 8) & 0xFF);
+  time_field[2] = ((datetime >> 16) & 0xFF);
+
+  return 0;
+}
+
+static
+int alter_field_content(char **fru_field , char *content) {
+  int content_len = strlen(content);
+  if (*fru_field != NULL)
+    free(*fru_field);
+  *fru_field = content;
+  return 0;
+}
+
+int fruid_modify(const char * cur_bin, const char * new_bin, const char * field, const char * content)
+{
+  int fruid_len, ret;
+  FILE *fruid_fd;
+  uint8_t *old_eeprom, *eeprom = NULL;
+  int total_field_opt_size = sizeof(fruid_field_all_opt)/sizeof(fruid_field_all_opt[0]);
+  fruid_info_t fruid;
+  int i, j, len;
+  int target = -1;
+  char *tmp_content = NULL;
+  int content_len;
+  int new_fruid_len;
+  uint8_t type_length;
+
+  /* Reset parser return value */
+  ret = 0;
+
+  /* Open the FRUID binary file */
+  fruid_fd = fopen(cur_bin, "rb");
+  if (!fruid_fd) {
+#ifdef DEBUG
+    syslog(LOG_ERR, "fruid: unable to open the file");
+#endif
+    return ENOENT;
+  }
+
+  /* Get the size of the binary file */
+  fseek(fruid_fd, 0, SEEK_END);
+  fruid_len = (uint32_t) ftell(fruid_fd);
+
+  fseek(fruid_fd, 0, SEEK_SET);
+
+  old_eeprom = (uint8_t *) malloc(fruid_len);
+  if (!old_eeprom) {
+#ifdef DEBUG
+    syslog(LOG_WARNING, "fruid: malloc: memory allocation failed\n");
+#endif
+    return ENOMEM;
+  }
+
+  /* Read the binary file */
+  fread(old_eeprom, sizeof(uint8_t), fruid_len, fruid_fd);
+
+  /* Close the FRUID binary file */
+  fclose(fruid_fd);
+
+  /* Parse eeprom dump*/
+  ret = fruid_parse_eeprom(old_eeprom, fruid_len, &fruid);
+
+  /* Free the eeprom malloced memory */
+  free(old_eeprom);
+
+  if (ret) {
+    printf("Failed to parse FRU!\n");
+    return -1;
+  } 
+
+  for(i = 0; i < total_field_opt_size; i++) {
+    if (!strcmp(field, fruid_field_all_opt[i])) {
+      target = i;
+      break;
+    }
+  }
+  if (target == -1) {
+    printf("Parameter \"%s\" is invalid!\n", field);
+    return -1;
+  }
+
+  if (target <= CCD4) {
+    if (fruid.chassis.flag != 1) {
+      printf("Chassis Area is invalid!\n");
+      return -1;
+    }
+  } else if (target <= BCD4) {
+    if (fruid.board.flag != 1) {
+      printf("Board Area is invalid!\n");
+      return -1;
+    }
+  } else {
+    if (fruid.product.flag != 1) {
+      printf("Product Area is invalid!\n");
+      return -1;
+    }
+  }
+
+  tmp_content = extract_content(content);
+  content_len = strlen(tmp_content);
+
+  if (content_len > MAX_FIELD_LENGTH) {
+    printf("Content length \"%s\" is more than its maximum length:%d !\n", field, MAX_FIELD_LENGTH);
+    return -1;
+  }
+
+  if (content_len)
+    type_length = 0xc0 + content_len;
+  else
+    type_length = 0;
+
+  // check custom field type length
+  switch (target) {
+    case CCD1:
+    case CCD2:
+    case CCD3:
+    case CCD4:
+    case BCD1:
+    case BCD2:
+    case BCD3:
+    case BCD4:
+    case PCD1:
+    case PCD2:
+    case PCD3:
+    case PCD4:
+      if (type_length == NO_MORE_DATA_BYTE) {
+        printf("Content length \"%s\" should not be 1 !\n", field);
+        return -1;
+      }
+      break;
+    default:
+      break;
+  }
+
+  // alter field content
+  switch (target) {
+    case CPN:
+      fruid.chassis.part_type_len = type_length;
+      alter_field_content(&fruid.chassis.part,tmp_content);
+      break; 
+    case CSN:
+      fruid.chassis.serial_type_len = type_length;
+      alter_field_content(&fruid.chassis.serial,tmp_content);
+      break;
+    case CCD1:
+      fruid.chassis.custom1_type_len = type_length;
+      alter_field_content(&fruid.chassis.custom1,tmp_content);
+      break;
+    case CCD2:
+      if (fruid.chassis.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.chassis.custom1_type_len = 0;
+      fruid.chassis.custom2_type_len = type_length;
+      alter_field_content(&fruid.chassis.custom2,tmp_content);
+      break;
+    case CCD3:
+      if (fruid.chassis.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.chassis.custom1_type_len = 0;
+      if (fruid.chassis.custom2_type_len == NO_MORE_DATA_BYTE)
+        fruid.chassis.custom2_type_len = 0;
+      fruid.chassis.custom3_type_len = type_length;
+      alter_field_content(&fruid.chassis.custom3,tmp_content);
+      break;
+    case CCD4:
+      if (fruid.chassis.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.chassis.custom1_type_len = 0;
+      if (fruid.chassis.custom2_type_len == NO_MORE_DATA_BYTE)
+        fruid.chassis.custom2_type_len = 0;
+      if (fruid.chassis.custom3_type_len == NO_MORE_DATA_BYTE)
+        fruid.chassis.custom3_type_len = 0;
+      fruid.chassis.custom4_type_len = type_length;
+      alter_field_content(&fruid.chassis.custom4,tmp_content);
+      break;
+    case BMD:
+      if(set_mfg_time(fruid.board.mfg_time, tmp_content) < 0) {
+        return -1;
+      }
+      break;
+    case BM:
+      fruid.board.mfg_type_len = type_length;
+      alter_field_content(&fruid.board.mfg,tmp_content);
+      break;
+    case BP:
+      fruid.board.name_type_len = type_length;
+      alter_field_content(&fruid.board.name,tmp_content);
+      break;
+    case BSN:
+      fruid.board.serial_type_len = type_length;
+      alter_field_content(&fruid.board.serial,tmp_content);
+      break;
+    case BPN:
+      fruid.board.part_type_len = type_length;
+      alter_field_content(&fruid.board.part,tmp_content);
+      break;
+    case BFI:
+      fruid.board.fruid_type_len = type_length;
+      alter_field_content(&fruid.board.fruid,tmp_content);
+      break;
+    case BCD1:
+      fruid.board.custom1_type_len = type_length;
+      alter_field_content(&fruid.board.custom1,tmp_content);
+      break;
+    case BCD2:
+      if (fruid.board.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.board.custom1_type_len = 0;
+      fruid.board.custom2_type_len = type_length;
+      alter_field_content(&fruid.board.custom2,tmp_content);
+      break;
+    case BCD3:
+      if (fruid.board.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.board.custom1_type_len = 0;
+      if (fruid.board.custom2_type_len == NO_MORE_DATA_BYTE)
+        fruid.board.custom2_type_len = 0;
+      fruid.board.custom3_type_len = type_length;
+      alter_field_content(&fruid.board.custom3,tmp_content);
+      break;
+    case BCD4:
+      if (fruid.board.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.board.custom1_type_len = 0;
+      if (fruid.board.custom2_type_len == NO_MORE_DATA_BYTE)
+        fruid.board.custom2_type_len = 0;
+      if (fruid.board.custom3_type_len == NO_MORE_DATA_BYTE)
+        fruid.board.custom3_type_len = 0;
+      fruid.board.custom4_type_len = type_length;
+      alter_field_content(&fruid.board.custom4,tmp_content);
+      break;
+    case PM:
+      fruid.product.mfg_type_len = type_length;
+      alter_field_content(&fruid.product.mfg,tmp_content);
+      break;
+    case PN:
+      fruid.product.name_type_len = type_length;
+      alter_field_content(&fruid.product.name,tmp_content);
+      break;
+    case PPN:
+      fruid.product.part_type_len = type_length;
+      alter_field_content(&fruid.product.part,tmp_content);
+      break;
+    case PV:
+      fruid.product.version_type_len = type_length;
+      alter_field_content(&fruid.product.version,tmp_content);
+      break;
+    case PSN:
+      fruid.product.serial_type_len = type_length;
+      alter_field_content(&fruid.product.serial,tmp_content);
+      break;
+    case PAT:
+      fruid.product.asset_tag_type_len = type_length;
+      alter_field_content(&fruid.product.asset_tag,tmp_content);
+      break;
+    case PFI:
+      fruid.product.fruid_type_len = type_length;
+      alter_field_content(&fruid.product.fruid,tmp_content);
+      break;
+    case PCD1:
+      fruid.product.custom1_type_len = type_length;
+      alter_field_content(&fruid.product.custom1,tmp_content);
+      break;
+    case PCD2:
+      if (fruid.product.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.product.custom1_type_len = 0;
+      fruid.product.custom2_type_len = type_length;
+      alter_field_content(&fruid.product.custom2,tmp_content);
+      break;
+    case PCD3:
+      if (fruid.product.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.product.custom1_type_len = 0;
+      if (fruid.product.custom2_type_len == NO_MORE_DATA_BYTE)
+        fruid.product.custom2_type_len = 0;
+      fruid.product.custom3_type_len = type_length;
+      alter_field_content(&fruid.product.custom3,tmp_content);
+      break;
+    case PCD4:
+      if (fruid.product.custom1_type_len == NO_MORE_DATA_BYTE)
+        fruid.product.custom1_type_len = 0;
+      if (fruid.product.custom2_type_len == NO_MORE_DATA_BYTE)
+        fruid.product.custom2_type_len = 0;
+      if (fruid.product.custom3_type_len == NO_MORE_DATA_BYTE)
+        fruid.product.custom3_type_len = 0;
+      fruid.product.custom4_type_len = type_length;
+      alter_field_content(&fruid.product.custom4,tmp_content);
+      break;
+    default:
+      return -1;
+      break;
+  }
+
+  // create new FRU alloc new eeporm
+  new_fruid_len = fruid_len + ((content_len / 8) + 1) * 8;
+  eeprom = (uint8_t *) malloc(new_fruid_len);
+  memset(eeprom, 0, new_fruid_len);
+  if (!eeprom) {
+#ifdef DEBUG
+    syslog(LOG_WARNING, "%s: malloc: memory allocation failed", __func__);
+#endif
+    return ENOMEM;
+  }
+
+  // chassis area
+  i = 8;
+  len = 0;
+  int start = i;
+  if (fruid.chassis.flag == 1) {
+    eeprom[i++] = fruid.chassis.format_ver;
+    eeprom[i++] = fruid.chassis.area_len;
+    eeprom[i++] = fruid.chassis.type;
+
+    eeprom[i++] = fruid.chassis.part_type_len;
+    len = FIELD_LEN(fruid.chassis.part_type_len);
+    memcpy(&eeprom[i], fruid.chassis.part, len);
+    i += len;
+
+    eeprom[i++] = fruid.chassis.serial_type_len;
+    len = FIELD_LEN(fruid.chassis.serial_type_len);
+    memcpy(&eeprom[i], fruid.chassis.serial, len);
+    i += len;
+
+    eeprom[i++] = fruid.chassis.custom1_type_len;
+    if (fruid.chassis.custom1_type_len == NO_MORE_DATA_BYTE)
+      goto chasis_chksum;
+    len = FIELD_LEN(fruid.chassis.custom1_type_len);
+    memcpy(&eeprom[i], fruid.chassis.custom1, len);
+    i += len;
+
+    eeprom[i++] = fruid.chassis.custom2_type_len;
+    if (fruid.chassis.custom2_type_len == NO_MORE_DATA_BYTE)
+      goto chasis_chksum;
+    len = FIELD_LEN(fruid.chassis.custom2_type_len);
+    memcpy(&eeprom[i], fruid.chassis.custom2, len);
+    i += len;
+
+    eeprom[i++] = fruid.chassis.custom3_type_len;
+    if (fruid.chassis.custom3_type_len == NO_MORE_DATA_BYTE)
+      goto chasis_chksum;
+    len = FIELD_LEN(fruid.chassis.custom3_type_len);
+    memcpy(&eeprom[i], fruid.chassis.custom3, len);
+    i += len;
+
+    eeprom[i++] = fruid.chassis.custom4_type_len;
+    if (fruid.chassis.custom4_type_len == NO_MORE_DATA_BYTE)
+      goto chasis_chksum;
+    len = FIELD_LEN(fruid.chassis.custom4_type_len);
+    memcpy(&eeprom[i], fruid.chassis.custom4, len);
+    i += len;
+
+  chasis_chksum:
+    if (eeprom[i - 1] != NO_MORE_DATA_BYTE) {
+      eeprom[i++] = NO_MORE_DATA_BYTE;
+    }
+    i += (7 - (i % 8));
+    fruid.chassis.area_len = i - start + 1;
+    eeprom[start + 1] = fruid.chassis.area_len / FRUID_AREA_LEN_MULTIPLIER;
+    ret = calculate_chksum(&eeprom[start], fruid.chassis.area_len);
+    if (ret < 0) {
+      printf("Update chassis checksum fail!\n");
+      goto error_exit;
+    }
+    i++;
+  } else {
+    fruid.chassis.area_len = 0;
+  }
+
+  // board area
+  start = i;
+  if (fruid.board.flag == 1) {
+    eeprom[i++] = fruid.board.format_ver;
+    eeprom[i++] = fruid.board.area_len;
+    eeprom[i++] = fruid.board.lang_code;
+
+    memcpy(&eeprom[i], fruid.board.mfg_time, 3);
+    i += 3;
+
+    eeprom[i++] = fruid.board.mfg_type_len;
+    len = FIELD_LEN(fruid.board.mfg_type_len);
+    memcpy(&eeprom[i], fruid.board.mfg, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.name_type_len;
+    len = FIELD_LEN(fruid.board.name_type_len);
+    memcpy(&eeprom[i], fruid.board.name, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.serial_type_len;
+    len = FIELD_LEN(fruid.board.serial_type_len);
+    memcpy(&eeprom[i], fruid.board.serial, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.part_type_len;
+    len = FIELD_LEN(fruid.board.part_type_len);
+    memcpy(&eeprom[i], fruid.board.part, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.fruid_type_len;
+    len = FIELD_LEN(fruid.board.fruid_type_len);
+    memcpy(&eeprom[i], fruid.board.fruid, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.custom1_type_len;
+    if (fruid.board.custom1_type_len == NO_MORE_DATA_BYTE)
+      goto board_chksum;
+    len = FIELD_LEN(fruid.board.custom1_type_len);
+    memcpy(&eeprom[i], fruid.board.custom1, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.custom2_type_len;
+    if (fruid.board.custom2_type_len == NO_MORE_DATA_BYTE)
+      goto board_chksum;
+    len = FIELD_LEN(fruid.board.custom2_type_len);
+    memcpy(&eeprom[i], fruid.board.custom2, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.custom3_type_len;
+    if (fruid.board.custom3_type_len == NO_MORE_DATA_BYTE)
+      goto board_chksum;
+    len = FIELD_LEN(fruid.board.custom3_type_len);
+    memcpy(&eeprom[i], fruid.board.custom3, len);
+    i += len;
+
+    eeprom[i++] = fruid.board.custom4_type_len;
+    if (fruid.board.custom4_type_len == NO_MORE_DATA_BYTE)
+      goto board_chksum;
+    len = FIELD_LEN(fruid.board.custom4_type_len);
+    memcpy(&eeprom[i], fruid.board.custom4, len);
+    i += len;
+
+  board_chksum:
+    if (eeprom[i - 1] != NO_MORE_DATA_BYTE) {
+      eeprom[i++] = NO_MORE_DATA_BYTE;
+    }
+    i += (7 - (i % 8));
+    fruid.board.area_len = i - start + 1;
+    eeprom[start + 1] = fruid.board.area_len / FRUID_AREA_LEN_MULTIPLIER;
+    ret = calculate_chksum(&eeprom[start], fruid.board.area_len);
+    if (ret < 0) {
+      printf("Update board checksum fail!\n");
+      goto error_exit;
+    }
+    i++;
+  } else {
+    fruid.board.area_len = 0;
+  }
+
+  // product area
+  start = i;
+  if (fruid.product.flag == 1) {
+    eeprom[i++] = fruid.product.format_ver;
+    eeprom[i++] = fruid.product.area_len;
+    eeprom[i++] = fruid.product.lang_code;
+
+    eeprom[i++] = fruid.product.mfg_type_len;
+    len = FIELD_LEN(fruid.product.mfg_type_len);
+    memcpy(&eeprom[i], fruid.product.mfg, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.name_type_len;
+    len = FIELD_LEN(fruid.product.name_type_len);
+    memcpy(&eeprom[i], fruid.product.name, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.part_type_len;
+    len = FIELD_LEN(fruid.product.part_type_len);
+    memcpy(&eeprom[i], fruid.product.part, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.version_type_len;
+    len = FIELD_LEN(fruid.product.version_type_len);
+    memcpy(&eeprom[i], fruid.product.version, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.serial_type_len;
+    len = FIELD_LEN(fruid.product.serial_type_len);
+    memcpy(&eeprom[i], fruid.product.serial, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.asset_tag_type_len;
+    len = FIELD_LEN(fruid.product.asset_tag_type_len);
+    memcpy(&eeprom[i], fruid.product.asset_tag, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.fruid_type_len;
+    len = FIELD_LEN(fruid.product.fruid_type_len);
+    memcpy(&eeprom[i], fruid.product.fruid, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.custom1_type_len;
+    if (fruid.product.custom1_type_len == NO_MORE_DATA_BYTE)
+      goto product_chksum;
+    len = FIELD_LEN(fruid.product.custom1_type_len);
+    memcpy(&eeprom[i], fruid.product.custom1, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.custom2_type_len;
+    if (fruid.product.custom2_type_len == NO_MORE_DATA_BYTE)
+      goto product_chksum;
+    len = FIELD_LEN(fruid.product.custom2_type_len);
+    memcpy(&eeprom[i], fruid.product.custom2, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.custom3_type_len;
+    if (fruid.product.custom3_type_len == NO_MORE_DATA_BYTE)
+      goto product_chksum;
+    len = FIELD_LEN(fruid.product.custom3_type_len);
+    memcpy(&eeprom[i], fruid.product.custom3, len);
+    i += len;
+
+    eeprom[i++] = fruid.product.custom4_type_len;
+    if (fruid.product.custom4_type_len == NO_MORE_DATA_BYTE)
+      goto product_chksum;
+    len = FIELD_LEN(fruid.product.custom4_type_len);
+    memcpy(&eeprom[i], fruid.product.custom4, len);
+    i += len;
+
+  product_chksum:
+    if (eeprom[i - 1] != NO_MORE_DATA_BYTE) {
+      eeprom[i++] = NO_MORE_DATA_BYTE;
+    }
+    i += (7 - (i % 8));
+    fruid.product.area_len = i - start + 1;
+    eeprom[start + 1] = fruid.product.area_len / FRUID_AREA_LEN_MULTIPLIER;
+    ret = calculate_chksum(&eeprom[start], fruid.product.area_len);
+    if (ret < 0) {
+      printf("Update product checksum fail!\n");
+      goto error_exit;
+    }
+    i++;
+  } else {
+    fruid.product.area_len = 0;
+  }
+
+  // update header
+  int offset = 1;
+  eeprom[0] = 0x01; // format version
+  if (fruid.chassis.flag == 1) {
+    eeprom[2] = offset; // chassis area offset
+  }
+  if (fruid.board.flag == 1) {
+    offset += fruid.chassis.area_len / FRUID_AREA_LEN_MULTIPLIER; // board area offset
+    eeprom[3] = offset;
+  }
+  if (fruid.product.flag == 1) {
+    offset += fruid.board.area_len / FRUID_AREA_LEN_MULTIPLIER; // product area offset
+    eeprom[4] = offset;
+  }
+
+  //  update header checksum
+  ret = calculate_chksum(&eeprom[0], 8);
+  if (ret < 0) {
+    printf("Update header checksum fail!\n");
+    goto error_exit;
+  }
+
+  /* Open the FRUID binary file */
+  fruid_fd = fopen(new_bin, "wb");
+  if (!fruid_fd) {
+#ifdef DEBUG
+    syslog(LOG_ERR, "%s: unable to open the file %s", __func__, new_bin);
+#endif
+    return ENOENT;
+  }
+
+  /* Write the binary file */
+  fwrite(eeprom, sizeof(uint8_t), i, fruid_fd);
+
+  /* Close the FRUID binary file */
+  fclose(fruid_fd);
+ 
+error_exit:
+  /* Free the eeprom malloced memory */
+  free(eeprom);
+  /* Free the malloced memory for the fruid information */
+  free_fruid_info(&fruid);
+  return ret;
+}
+

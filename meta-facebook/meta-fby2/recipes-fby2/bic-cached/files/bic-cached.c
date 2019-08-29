@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <getopt.h>
 #include <syslog.h>
 #include <string.h>
 #include <pthread.h>
@@ -31,16 +32,16 @@
 #include <sys/file.h>
 #include <openbmc/ipmi.h>
 #include <openbmc/ipmb.h>
-#include <openbmc/obmc-pal.h>
 #include <facebook/bic.h>
+#include <openbmc/pal.h>
 
 
 #define LAST_RECORD_ID 0xFFFF
 #define MAX_SENSOR_NUM 0xFF
 #define BYTES_ENTIRE_RECORD 0xFF
 
-#define MAX_RETRY 180         // 1 s * 180 = 3 mins
-#define MAX_RETRY_CNT 9000    // A senond can run about 50 times, 3 mins = 180 * 50
+#define MAX_RETRY 6           // 180 secs = 1500 * 6
+#define MAX_RETRY_CNT 1500    // A senond can run about 50 times, 30 secs = 30 * 50
 
 int
 fruid_cache_init(uint8_t slot_id) {
@@ -55,7 +56,7 @@ fruid_cache_init(uint8_t slot_id) {
 
   ret = bic_read_fruid(slot_id, 0, fruid_temp_path, &fru_size);
   if (ret) {
-    syslog(LOG_WARNING, "fruid_cache_init: bic_read_fruid returns %d, fru_size: %d\n", ret, fru_size);
+    syslog(LOG_WARNING, "fruid_cache_init: bic_read_fruid slot%d returns %d, fru_size: %d\n", slot_id, ret, fru_size);
   }
 
   rename(fruid_temp_path, fruid_path);
@@ -65,7 +66,7 @@ fruid_cache_init(uint8_t slot_id) {
 
 int
 sdr_cache_init(uint8_t slot_id) {
-  int ret;
+  int ret = 0, rc;
   int fd;
   int retry = 0;
   uint8_t rlen;
@@ -95,11 +96,11 @@ sdr_cache_init(uint8_t slot_id) {
     return ret;
   }
 
-  ret = pal_flock_retry(fd);
-  if (ret == -1) {
+  rc = pal_flock_retry(fd);
+  if (rc == -1) {
    syslog(LOG_WARNING, "%s: failed to flock on %s", __func__, path);
    close(fd);
-   return ret;
+   return rc;
   }
 
   retry = 0;
@@ -122,21 +123,66 @@ sdr_cache_init(uint8_t slot_id) {
     }
     retry++;
   } while (retry < MAX_RETRY_CNT);
-  if (retry == MAX_RETRY_CNT) {   // if exceed 3 mins, exit this step
-    syslog(LOG_CRIT, "Fail on getting Slot%u SDR via BIC", slot_id);
+  if (retry == MAX_RETRY_CNT) {   // if exceed 30 secs, exit this step
+    syslog(LOG_WARNING, "Fail on getting Slot%u SDR via BIC", slot_id);
   }
 
-  ret = pal_unflock_retry(fd);
-  if (ret == -1) {
+  rc = pal_unflock_retry(fd);
+  if (rc == -1) {
    syslog(LOG_WARNING, "%s: failed to unflock on %s", __func__, path);
    close(fd);
-   return ret;
+   return rc;
   }
 
   close(fd);
   rename(sdr_temp_path, sdr_path);
 
   return ret;
+}
+
+int
+parse_args(int argc, char * const argv[], bool *do_fru, bool *do_sdr) {
+  int opt;
+  int optind_long;
+  uint8_t fru = 0, sdr = 0;
+  static const char *optstring = "fs";
+  static const struct option long_options[] = {
+    {"fruid", no_argument, 0, 'f'},
+    {"sdr", no_argument, 0, 's'},
+    {0, 0, 0, 0}
+  };
+
+  while ((opt = getopt_long(argc, argv, optstring, long_options, &optind_long)) != -1) {
+    switch (opt) {
+      case 'f':
+        fru = 1;
+        break;
+      case 's':
+        sdr = 1;
+        break;
+      default:
+        return -1;
+    }
+  }
+
+  if (argc < optind + 1) {
+    return -1;
+  }
+
+  if (fru ^ sdr) {
+    if (fru) {
+      *do_fru = true;
+      *do_sdr = false;
+    } else {
+      *do_fru = false;
+      *do_sdr = true;
+    }
+  } else {
+    *do_fru = true;
+    *do_sdr = true;
+  }
+
+  return optind;
 }
 
 int
@@ -149,12 +195,22 @@ main (int argc, char * const argv[])
   int retry = 0;
   int max_retry = 3;
   char path[128];
+  bool fruid_dump = true, sdr_dump = true;
 
-  if (argc != 2) {
+  ret = parse_args(argc, argv, &fruid_dump, &sdr_dump);
+  if ((ret < 0) || (ret >= argc)) {
+    printf("Usage: bic-cached [Option] <SLOT_NUM>\n");
+    printf("\n");
+    printf("           Option:\n");
+    printf("                 -f update FRU cache\n");
+    printf("                 -s update SDR cache\n");
     return -1;
   }
 
-  slot_id = atoi(argv[1]);
+  slot_id = atoi(argv[ret]);
+  if ((slot_id < FRU_SLOT1) || (slot_id > FRU_SLOT4)) {
+    return -1;
+  }
 
   sprintf(path, BIC_CACHED_PID, slot_id);
   pid_file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
@@ -171,39 +227,50 @@ main (int argc, char * const argv[])
   do {
     ret = bic_get_self_test_result(slot_id, (uint8_t *)&self_test_result);
     if (ret == 0) {
-      syslog(LOG_INFO, "bic_get_self_test_result: %X %X\n", self_test_result[0], self_test_result[1]);
+      syslog(LOG_INFO, "bic_get_self_test_result of slot%u: %X %X", slot_id, self_test_result[0], self_test_result[1]);
       break;
     }
     sleep(5);
   } while (ret != 0);
 
+  if (sdr_dump == true) {
+    retry = 0;
+    do {
+      ret = sdr_cache_init(slot_id);
+      if (ret == 0)
+        break;
+
+      retry++;
+      sleep(1);
+    } while ((ret != 0) && (retry < MAX_RETRY));
+
+    if (ret != 0) {   // if exceed 3 mins, exit this step
+      syslog(LOG_CRIT, "Fail on getting Slot%u SDR", slot_id);
+    }
+  }
+
   // Get Server FRU
-  do {
-    if (fruid_cache_init(slot_id) == 0)
-      break;
+  if (fruid_dump == true) {
+    retry = 0;
+    do {
+      ret = fruid_cache_init(slot_id);
+      if (ret == 0)
+        break;
 
-    retry++;
-    sleep(1);
-  } while (retry < max_retry);
+      retry++;
+      sleep(1);
+    } while (retry < max_retry);
 
-  if (retry == max_retry)
-    syslog(LOG_CRIT, "Fail on getting Slot%u FRU", slot_id);
-
-  retry = 0;
-  do {
-    ret = sdr_cache_init(slot_id);
-    retry++;
-    sleep(1);
-  } while ((ret != 0) && (retry < MAX_RETRY));
-  if (retry == MAX_RETRY) {   // if exceed 3 mins, exit this step
-    syslog(LOG_CRIT, "Fail on getting Slot%u SDR", slot_id);
-  } 
+    if (ret != 0) {
+      syslog(LOG_CRIT, "Fail on getting Slot%u FRU", slot_id);
+    }
+  }
 
   ret = pal_unflock_retry(pid_file);
   if (ret == -1) {
    syslog(LOG_WARNING, "%s: failed to unflock on %s", __func__, path);
   }
-  
+
   close(pid_file);
   remove(path);
   return 0;

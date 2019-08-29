@@ -14,6 +14,9 @@
 # Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor,
 # Boston, MA 02110-1301 USA
+
+inherit python3unittest
+
 SUMMARY = "Rest API Daemon"
 DESCRIPTION = "Daemon to handle RESTful interface."
 SECTION = "base"
@@ -23,6 +26,8 @@ LIC_FILES_CHKSUM = "file://rest.py;beginline=5;endline=18;md5=0b1ee7d6f844d472fa
 
 
 SRC_URI = "file://rest.py \
+           file://common_tree.py \
+           file://rest_crawler.py \
            file://node.py \
            file://tree.py \
            file://pal.py \
@@ -52,13 +57,12 @@ SRC_URI = "file://rest.py \
            file://node_fcb.py \
            file://node_identify.py \
            file://node_pdpb.py \
-           file://node_server_2s.py \
            file://setup-rest-api.sh \
            file://run_rest \
           "
 
 S = "${WORKDIR}"
-DEPENDS += "libpal update-rc.d-native"
+DEPENDS += "libpal update-rc.d-native python3-psutil"
 
 do_install() {
   dst="${D}/usr/local/fbpackages/${pkgdir}"
@@ -81,7 +85,7 @@ do_install() {
 }
 
 pkgdir = "rest-api"
-RDEPENDS_${PN} += "libpal"
+RDEPENDS_${PN} += "libpal python3-core"
 
 FBPACKAGEDIR = "${prefix}/local/fbpackages"
 

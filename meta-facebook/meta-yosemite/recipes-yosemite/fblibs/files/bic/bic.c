@@ -235,7 +235,7 @@ set_fw_update_ongoing(uint8_t slot_id, uint16_t tmout) {
   char value[64];
   struct timespec ts;
 
-  sprintf(key, "slot%d_fwupd", slot_id);
+  sprintf(key, "fru%u_fwupd", slot_id);
   clock_gettime(CLOCK_MONOTONIC, &ts);
   ts.tv_sec += tmout;
   sprintf(value, "%d", (int) ts.tv_sec);
@@ -691,20 +691,20 @@ _update_bic_main(uint8_t slot_id, char *path) {
   printf("Stopped ipmbd for this slot %x..\n",slot_id);
 
   if (!_is_bic_update_ready(slot_id)) {
-    // Restart ipmb daemon with "bicup" for bic update
+    // Restart ipmb daemon with "-u|--enable-bic-update" for bic update
     memset(cmd, 0, sizeof(cmd));
-    sprintf(cmd, "/usr/local/bin/ipmbd %d %d bicup > /dev/null 2>&1 &", get_ipmb_bus_id(slot_id), slot_id);
+    sprintf(cmd, "/usr/local/bin/ipmbd -u %d %d > /dev/null 2>&1 &", get_ipmb_bus_id(slot_id), slot_id);
     system(cmd);
-    printf("start ipmbd bicup for this slot %x..\n",slot_id);
+    printf("start ipmbd -u for this slot %x..\n",slot_id);
 
     sleep(2);
 
     // Enable Bridge-IC update
     _enable_bic_update(slot_id);
 
-    // Kill ipmb daemon "bicup" for this slot
+    // Kill ipmb daemon "--enable-bic-update" for this slot
     memset(cmd, 0, sizeof(cmd));
-    sprintf(cmd, "ps | grep -v 'grep' | grep 'ipmbd %d' |awk '{print $1}'| xargs kill", get_ipmb_bus_id(slot_id));
+    sprintf(cmd, "ps | grep -v 'grep' | grep 'ipmbd -u %d' |awk '{print $1}'| xargs kill", get_ipmb_bus_id(slot_id));
     system(cmd);
     printf("stop ipmbd for slot %x..\n", slot_id);
   }
@@ -1064,7 +1064,7 @@ check_bios_image(int fd, long size) {
 }
 
 int
-bic_update_fw(uint8_t slot_id, uint8_t comp, char *path) {
+bic_update_firmware(uint8_t slot_id, uint8_t comp, char *path, uint8_t force) {
   int ret = -1, rc;
   uint32_t offset;
   volatile uint16_t count, read_count;
@@ -1097,7 +1097,7 @@ bic_update_fw(uint8_t slot_id, uint8_t comp, char *path) {
 
   stat(path, &st);
   if (comp == UPDATE_BIOS) {
-    if (check_bios_image(fd, st.st_size) < 0) {
+    if (!force && check_bios_image(fd, st.st_size) < 0) {
       printf("invalid BIOS file!\n");
       goto error_exit;
     }
@@ -1235,6 +1235,11 @@ error_exit:
   set_fw_update_ongoing(slot_id, 0);
 
   return ret;
+}
+
+int
+bic_update_fw(uint8_t slot_id, uint8_t comp, char *path) {
+  return bic_update_firmware(slot_id, comp, path, 0);
 }
 
 int

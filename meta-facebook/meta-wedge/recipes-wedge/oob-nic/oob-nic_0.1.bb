@@ -27,10 +27,11 @@ SRC_URI = "file://src \
 
 S = "${WORKDIR}/src"
 
-DEPENDS += "openbmc-utils liblog libwedge-eeprom obmc-i2c"
+LDFLAGS += "-llog -lobmc-i2c"
+DEPENDS += "openbmc-utils liblog libwedge-eeprom libobmc-i2c liblog"
 DEPENDS += "update-rc.d-native"
 
-RDEPENDS_${PN} += "libwedge-eeprom"
+RDEPENDS_${PN} += "libwedge-eeprom liblog libobmc-i2c"
 
 do_install() {
   install -d ${D}${sbindir}

@@ -23,6 +23,10 @@ SRC_URI += "file://vr.cpp \
             file://usbdbg.h \
             file://usbdbg.cpp \
             file://usbdbg_ext.cpp \
+            file://bic_cpld_ext.cpp \
+            file://bic_me_ext.cpp \
+            file://pcie_switch.cpp \
+            file://m2_dev.cpp \
            "
 CXXFLAGS += " -DBIC_SUPPORT "
 DEPENDS += "libipmi libipmb libbic libocpdbg-lcd libfby2-sensor"

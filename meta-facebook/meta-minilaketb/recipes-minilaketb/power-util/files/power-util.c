@@ -170,7 +170,7 @@ static bool can_change_power(uint8_t fru)
 
 static int
 power_util(uint8_t fru, uint8_t opt) {
-  int ret;
+  int ret = -1;
   uint8_t status;
   int retries;
   char pwr_state[MAX_VALUE_LEN] = {0};
@@ -450,7 +450,7 @@ rm_process_running_flag(uint8_t slot_id, uint8_t opt) {
 int
 main(int argc, char **argv) {
 
-  int ret;
+  int ret=0;
 
   uint8_t fru, status, opt;
   char *option;

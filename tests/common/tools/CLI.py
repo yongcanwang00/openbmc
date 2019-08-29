@@ -98,7 +98,7 @@ def generalTypeTest(cmd_bmc, data, testName, testPath="/common/"):
         print(output[0].decode().split('\n')[0].rstrip())
     return
 
-def fscdTest(cmd_bmc, data, testName, testPath="/common/"):
+def platformOnlyTest(cmd_bmc, data, testName, testPath="/common/"):
     """
     Run testName.py with command line arguments on the target BMC
     """
@@ -212,7 +212,7 @@ def cmmComponentPresenceTest(ssh, data, testName):
     ssh.sendline(cmd)
     ssh.prompt(timeout=1000)
     output = ssh.before
-    print(str(output, 'utf-8').split('\n', 1)[1])
+    print(str(output).split('\n', 1)[1])
     return
 
 
@@ -226,16 +226,24 @@ if __name__ == "__main__":
     cmd_bmc = "sshpass -p 0penBmc ssh -tt root@{} "
     util = unitTestUtil.UnitTestUtil()
     try:
-        args = util.Argparser(['json', '--headnode', 'hostnameBMC', 'hostnameMS', '--verbose'],
-                              [str, None, str, str, None],
-                              ['a json file', 'a host name for the headnode', 'a hostname for BMC',
-                              'a hostname for the Micro server',
-                              'output all steps from test with mode options: DEBUG, INFO, WARNING, ERROR'])
+        args = util.Argparser(['json', '--headnode', 'hostnameBMC', 'hostnameMS', '--verbose', '--skip_scp'],
+                              [str, None, str, str, None, None],
+                              ['Test json file',
+                               'Hostname for headnode',
+                               'Hostname for BMC',
+                               'Hostname for  host',
+                               'Debug option: DEBUG, INFO, WARNING, ERROR',
+                               'Skip copying tests to target. If set user should have copied tests manually. Usage "--skip_scp True" '],
+                              [False, False, True, False, False, False])
         hostnameBMC = ""
         headnodeName = ""
         json = args.json
-        hostnameBMC = args.hostnameBMC
         hostnameMS = args.hostnameMS
+        if args.hostnameBMC is not None:
+            hostnameBMC = args.hostnameBMC
+        else:
+            index = hostnameMS.index('.')
+            hostnameBMC = hostnameMS[:index] + '-oob' + hostnameMS[index:]
         if args.headnode is not None:
             HEADNODE = True
             headnodeName = args.headnode
@@ -258,15 +266,17 @@ if __name__ == "__main__":
         # login to host
         ssh = pxssh.pxssh()
         if HEADNODE is False:
-            # scp directory
-            util.scp(path, hostnameBMC, True, pexpect)
+            if args.skip_scp is None:
+                # scp directory
+                util.scp(path, hostnameBMC, True, pexpect)
             # login to host
             util.Login(hostnameBMC, ssh)
             ssh.sendline('cd /tmp/tests/common')
             ssh.prompt()
         else:
-            util.scp_through_proxy(path, headnodeName, hostnameBMC,
-                                   True, pexpect)
+            if args.skip_scp is None:
+                util.scp_through_proxy(path, headnodeName, hostnameBMC,
+                                    True, pexpect)
 
         # run tests
         if "cmmComponentPresenceTest.py" in data:
@@ -282,6 +292,9 @@ if __name__ == "__main__":
         if "eepromTest.py" in data:
             if data["eepromTest.py"] == 'yes':
                 generalTypeTest(cmd_bmc, data, "eepromTest.py")
+        if "hostMacTest.py" in data:
+            if data["hostMacTest.py"] == 'yes':
+                generalTypeTest(cmd_bmc, data, "hostMacTest.py")
         if "fansTest.py" in data:
             if data["fansTest.py"] == 'yes':
                 generalTypeTest(cmd_bmc, data, "fansTest.py")
@@ -310,9 +323,18 @@ if __name__ == "__main__":
         if "kernelModulesTest.py" in data:
             if data["kernelModulesTest.py"][0] == 'yes':
                 generalJsonTest(cmd_bmc, data, "kernelModulesTest.py")
+        if "gpioTest.py" in data:
+            if data["gpioTest.py"][0] == 'yes':
+                generalJsonTest(cmd_bmc, data, "gpioTest.py")
         if "processRunningTest.py" in data:
             if data["processRunningTest.py"][0] == 'yes':
                 generalJsonTest(cmd_bmc, data, "processRunningTest.py")
+        if "bmcUtiltest.py" in data:
+            if data["bmcUtiltest.py"][0] == 'yes':
+                generalJsonTest(cmd_bmc, data, "bmcUtiltest.py")
+        if "scriptsDependencyTest.py" in data:
+            if data["scriptsDependencyTest.py"][0] == 'yes':
+                generalJsonTest(cmd_bmc, data, "scriptsDependencyTest.py")
         if "solTest.py" in data:
             if data["solTest.py"] == 'yes':
                 if HEADNODE:
@@ -320,21 +342,24 @@ if __name__ == "__main__":
                                        headnodeName)
                 else:
                     generalTypeBMCTest(hostnameBMC, "solTest.py", data)
+        # Platform specific tests
+        if "fscd_test.py" in data:
+            if data["fscd_test.py"][0] == 'yes':
+                platformOnlyTest(cmd_bmc, data, "fscd_test.py", data["fscd_test.py"][1]["testfile"])
+        if "psumuxmon_test.py" in data:
+            if data["psumuxmon_test.py"][0] == 'yes':
+                platformOnlyTest(cmd_bmc, data, "psumuxmon_test.py", data["psumuxmon_test.py"][1]["testfile"])
+
+        # Watchdog test.
+        if "watchdogResetTest.py" in data:
+            if data["watchdogResetTest.py"] == 'yes':
+                generalTypeTest(cmd_bmc, data, "watchdogResetTest.py")
+
+        # these tests need to be run at the end because when BMC reboots,
+        # tests are lost from the system
         if "powerCycleHWTest.py" in data:
             if data["powerCycleHWTest.py"] == 'yes':
                 generalTypeTest(cmd_bmc, data, "powerCycleHWTest.py")
         if "powerCycleSWTest.py" in data:
             if data["powerCycleSWTest.py"] == 'yes':
                 powerCycleSWTest(cmd_bmc, data, hostnameBMC, hostnameMS)
-        if "fscd_test.py" in data:
-            if data["fscd_test.py"][0] == 'yes':
-                fscdTest(cmd_bmc, data, "fscd_test.py", data["fscd_test.py"][1]["testfile"])
-        if "watchdogResetTest.py" in data:
-            if HEADNODE:
-                if data["watchdogResetTest.py"][0] == 'yes':
-                    generalTypeBMCTest(hostnameBMC, "watchdogResetTest.py",
-                                       data, headnodeName)
-            else:
-                if data["watchdogResetTest.py"] == 'yes':
-                    generalTypeBMCTest(hostnameBMC, "watchdogResetTest.py",
-                                       data)

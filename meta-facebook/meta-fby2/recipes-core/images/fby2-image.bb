@@ -14,7 +14,6 @@ IMAGE_INSTALL += " \
   plat-utils \
   fan-util \
   fscd \
-  watchdog-ctrl \
   sensor-setup \
   ipmid \
   packagegroup-openbmc-base \
@@ -38,9 +37,10 @@ IMAGE_INSTALL += " \
   fw-util \
   hsvc-util \
   fpc-util \
+  imc-util \
   me-util \
   crashdump \
-  log-util \
+  log-util-v2 \
   lldp-util \
   spatula \
   openbmc-utils \
@@ -50,8 +50,15 @@ IMAGE_INSTALL += " \
   asd-test \
   bios-util \
   threshold-util \
+  libncsi \
   ncsid \
   vboot-utils \
+  sensordump \
+  enclosure-util \
+  libpldm \
+  nvme-util \
+  snapshot-util \
+  slot-util \
   "
 
 IMAGE_FEATURES += " \

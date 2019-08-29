@@ -1,3 +1,23 @@
+#!/usr/bin/env python
+#
+# Copyright 2018-present Facebook. All Rights Reserved.
+#
+# This program file is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; version 2 of the License.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program in a file named COPYING; if not, write to the
+# Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301 USA
+#
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -32,7 +52,7 @@ def slotidTest(data, result, endpoint):
         item = item.encode()
         if item in result:
             return
-    print("Expected one of {} in response={}",
+    logger.debug("Expected one of {} in response={}".
           format(data['endpoints'][endpoint], result))
     print("Rest-api test [FAILED]")
     sys.exit(1)
@@ -51,7 +71,6 @@ def restapiTest(data, host, logger):
     for endpoint in data['endpoints']:
         cmd = curl_cmd.format(host, endpoint)
         logger.debug("Executing cmd={}".format(cmd))
-        print("Executing cmd={}".format(cmd))
 
         try:
             f = subprocess.Popen(cmd,
@@ -65,11 +84,11 @@ def restapiTest(data, host, logger):
             for item in data['endpoints'][endpoint]:
                 item = item.encode()
                 if item not in result:
-                    print("Expected {} in response={}", format(item, result))
+                    logger.debug("Expected {} in response={}".format(item, result))
                     print("Rest-api test [FAILED]")
                     sys.exit(1)
-        except Exception:
-            print("Rest-api test [FAILED]")
+        except Exception as e:
+            print("Rest-api test [FAILED] with exception={}".format(e))
             sys.exit(1)
     print("Rest-api test [PASSED]")
     sys.exit(0)

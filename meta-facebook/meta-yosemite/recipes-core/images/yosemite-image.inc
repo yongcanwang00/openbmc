@@ -17,7 +17,6 @@ IMAGE_INSTALL += " \
   fbutils \
   fan-util \
   fscd \
-  watchdog-ctrl \
   sensor-setup \
   ipmid \
   packagegroup-openbmc-net \
@@ -39,13 +38,16 @@ IMAGE_INSTALL += " \
   fw-util \
   fpc-util \
   me-util \
-  log-util \
+  log-util-v2 \
   lldp-util \
   spatula \
   openbmc-utils \
   conf-util \
+  libncsi \
   ncsi-util \
   ncsid \
+  libpldm \
+  slot-util \
   "
 
 IMAGE_FEATURES += " \

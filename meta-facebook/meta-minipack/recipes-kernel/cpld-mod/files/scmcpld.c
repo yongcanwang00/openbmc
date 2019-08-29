@@ -74,47 +74,32 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x02, 0, 8,
   },
   {
-    "sys_red",
-    "0: LED  RED is ON\n"
-    "1: LED  RED is OFF",
+    "sys_led",
+    "0: LED is OFF\n"
+    "1: LED is ON",
     I2C_DEV_ATTR_SHOW_DEFAULT,
     I2C_DEV_ATTR_STORE_DEFAULT,
     0x08, 0, 1,
   },
   {
-    "sys_green",
-    "0: LED  GREEN is ON\n"
-    "1: LED  GREEN is OFF",
+    "sys_led_twinkle",
+    "0: LED is not twinking\n"
+    "1: LED is twinking",
     I2C_DEV_ATTR_SHOW_DEFAULT,
     I2C_DEV_ATTR_STORE_DEFAULT,
     0x08, 1, 1,
   },
   {
-    "sys_blue",
-    "0: LED  BLUE is ON\n"
-    "1: LED  BLUE is OFF",
+    "sys_led_color",
+    "0: LED color is BLUE\n"
+    "1: LED color is AMBER",
     I2C_DEV_ATTR_SHOW_DEFAULT,
     I2C_DEV_ATTR_STORE_DEFAULT,
     0x08, 2, 1,
   },
   {
-    "sys_blink",
-    "0: LED No blink\n"
-    "1: LED Blink is ON",
-    I2C_DEV_ATTR_SHOW_DEFAULT,
-    I2C_DEV_ATTR_STORE_DEFAULT,
-    0x08, 3, 1,
-  },
-  {
-    "sys_tst_en",
-    "0: LED controlled by sys_red sys_green sys_blue\n"
-    "1: LED controlled by HW Logic - 7 color",
-    I2C_DEV_ATTR_SHOW_DEFAULT,
-    I2C_DEV_ATTR_STORE_DEFAULT,
-    0x08, 4, 1,
-  },
-  {
     "rj45_led1",
+    "Need 0x09[7] set to 0\n"
     "0: LED GREEN is OFF\n"
     "1: LED GREEN is ON",
     I2C_DEV_ATTR_SHOW_DEFAULT,
@@ -123,6 +108,7 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
   },
   {
     "rj45_led2",
+    "Need 0x09[7] set to 0\n"
     "0: LED ORANGE is OFF\n"
     "1: LED ORANGE is ON",
     I2C_DEV_ATTR_SHOW_DEFAULT,
@@ -131,6 +117,7 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
   },
   {
     "sfp_led3_n",
+    "Need 0x09[7] set to 0\n"
     "1: LED ORANGE is ON\n"
     "0: LED ORANGE is OFF",
     I2C_DEV_ATTR_SHOW_DEFAULT,
@@ -139,6 +126,7 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
   },
   {
     "sfp_led3_p",
+    "Need 0x09[7] set to 0\n"
     "1: LED GREEN is ON\n"
     "0: LED GREEN is OFF",
     I2C_DEV_ATTR_SHOW_DEFAULT,
@@ -146,9 +134,28 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x09, 3, 1,
   },
   {
-    "rj45_mode_sel",
-    "1: Control by OOB_LED\n"
-    "0: Control by SW register 0x09[1:0]",
+    "oob_mode_sel",
+    "Need 0x09[7] set to 0\n"
+    "1: OOB LED control by OOB\n"
+    "0: SW control, control by 0x09[3:0]",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x09, 5, 1,
+  },
+  {
+    "sfp_rj45_sel",
+    "Need 0x09[7] set to 0\n"
+    "1: SFP\n"
+    "0: RJ45",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x09, 6, 1,
+  },
+  {
+    "sfp_auto_detect",
+    "If SFP present then swith OOB LED to SFP, else switch OOB LED to RJ45\n"
+    "1: Auto detect SFP present\n"
+    "0: SW control, Control by SW register 0x09[6:5][3:0]",
     I2C_DEV_ATTR_SHOW_DEFAULT,
     I2C_DEV_ATTR_STORE_DEFAULT,
     0x09, 7, 1,
@@ -507,14 +514,6 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x31, 4, 1,
   },
   {
-    "pwr_stby_en",
-    "0: disable\n"
-    "1: Enable",
-    I2C_DEV_ATTR_SHOW_DEFAULT,
-    I2C_DEV_ATTR_STORE_DEFAULT,
-    0x31, 5, 1,
-  },
-  {
     "a_pwr_stby_en",
     "0: disable\n"
     "1: Enable",
@@ -523,7 +522,7 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x31, 6, 1,
   },
   {
-    "iso_pcie_com",
+    "iso_com_i2c_en",
     "0: Enable\n"
     "1: Disbale",
     I2C_DEV_ATTR_SHOW_DEFAULT,
@@ -563,14 +562,6 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x32, 4, 1,
   },
   {
-    "iso_com_en",
-    "0: Enable\n"
-    "1: Disbale",
-    I2C_DEV_ATTR_SHOW_DEFAULT,
-    I2C_DEV_ATTR_STORE_DEFAULT,
-    0x32, 5, 1,
-  },
-  {
     "iso_tpm_en",
     "0: Enable\n"
     "1: Disbale",
@@ -595,14 +586,6 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x33, 0, 1,
   },
   {
-    "iso_reserved_en",
-    "0: Enable\n"
-    "1: Disbale",
-    I2C_DEV_ATTR_SHOW_DEFAULT,
-    I2C_DEV_ATTR_STORE_DEFAULT,
-    0x33, 1, 1,
-  },
-  {
     "iso_brg_thrm_n",
     "input from off-Module temp sensor indicating an over-temp situation",
     I2C_DEV_ATTR_SHOW_DEFAULT,
@@ -610,19 +593,35 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x33, 2, 1,
   },
   {
+    "iso_fpgarp_en",
+    "0: Enable\n"
+    "1: Disbale",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x33, 3, 1,
+  },
+  {
+    "iso_th3rp_en",
+    "0: Enable\n"
+    "1: Disbale",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x33, 4, 1,
+  },
+  {
+    "iso_ds100_en",
+    "0: Enable\n"
+    "1: Disbale",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x33, 5, 1,
+  },
+  {
     "iso_brg_thrmtrip_n",
     "Indicating that the CPU has entered thermal shutdown",
     I2C_DEV_ATTR_SHOW_DEFAULT,
     NULL,
     0x34, 0, 1,
-  },
-  {//value is weird
-    "uart_en_n",
-    "0: Enable\n"
-    "1: Disbale",
-    I2C_DEV_ATTR_SHOW_DEFAULT,
-    I2C_DEV_ATTR_STORE_DEFAULT,
-    0x35, 0, 1,
   },
   {
     "i2c_bus_en",
@@ -870,6 +869,54 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
     0x3a, 7, 1,
   },
   {
+    "scm_uart_switch_n_clr",
+    "0: Clear 0x3A Bit [5] data\n"
+    "1: Normal",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x3b, 0, 1,
+  },
+  {
+    "scm_debug_rst_btn_n_clr",
+    "0: Clear 0x3A Bit [6] data\n"
+    "1: Normal",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x3b, 1, 1,
+  },
+  {
+    "iso_com_wdt_en",
+    "0: Enable\n"
+    "1: Disable",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x3c, 0, 1,
+  },
+  {
+    "iso_com_early_en",
+    "0: Enable\n"
+    "1: Disable",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x3c, 1, 1,
+  },
+  {
+    "iso_switch_en",
+    "0: Enable\n"
+    "1: Disable",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x3c, 2, 1,
+  },
+  {
+    "iso_com_thrm_en",
+    "0: Enable\n"
+    "1: Disable",
+    I2C_DEV_ATTR_SHOW_DEFAULT,
+    I2C_DEV_ATTR_STORE_DEFAULT,
+    0x3c, 3, 1,
+  },
+  {
     "ds100_ensmb",
     "0:Disbale\n"
     "1:Enable",
@@ -939,8 +986,6 @@ static const i2c_dev_attr_st scmcpld_attr_table[] = {
   },
 };
 
-static i2c_dev_data_st scmcpld_data;
-
 /*
  * SCMCPLD i2c addresses.
  */
@@ -970,13 +1015,23 @@ static int scmcpld_probe(struct i2c_client *client,
                          const struct i2c_device_id *id)
 {
   int n_attrs = sizeof(scmcpld_attr_table) / sizeof(scmcpld_attr_table[0]);
-  return i2c_dev_sysfs_data_init(client, &scmcpld_data,
+  struct device *dev = &client->dev;
+  i2c_dev_data_st *data;
+
+  data = devm_kzalloc(dev, sizeof(i2c_dev_data_st), GFP_KERNEL);
+  if (!data) {
+    return -ENOMEM;
+  }
+
+  return i2c_dev_sysfs_data_init(client, data,
                                  scmcpld_attr_table, n_attrs);
 }
 
 static int scmcpld_remove(struct i2c_client *client)
 {
-  i2c_dev_sysfs_data_clean(client, &scmcpld_data);
+  i2c_dev_data_st *data = i2c_get_clientdata(client);
+  i2c_dev_sysfs_data_clean(client, data);
+
   return 0;
 }
 

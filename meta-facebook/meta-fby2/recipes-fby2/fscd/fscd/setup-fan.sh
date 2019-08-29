@@ -30,8 +30,8 @@
 . /usr/local/fbpackages/utils/ast-functions
 
 default_fsc_config_path="/etc/fsc-config.json"
-sku_type=`cat /tmp/slot.bin`
-server_type=`cat /tmp/server_type.bin`
+sku_type=0
+server_type=0
 full_config=1
 
 echo "Setup fan speed... "
@@ -51,16 +51,32 @@ echo "Setup fan speed... "
 #   exit 1
 #fi
 
+for i in `seq 1 1 4`
+do
+  tmp_sku=$(get_slot_type $i)
+  sku_type=$(($(($tmp_sku << $(($(($i*4)) - 4))))+$sku_type))
+  tmp_server=$(get_server_type $i)
+  server_type=$(($(($tmp_server << $(($(($i*4)) - 4))))+$server_type))
+done
+
 case "$sku_type" in
    "0")
-     case "$server_type" in 
+     case "$server_type" in
        "0")
          echo "Run FSC 4 TLs Config"
          cp /etc/FSC_FBY2_PVT_4TL_config.json ${default_fsc_config_path}
        ;;
-       "85")
+       "4369")
          echo "Run FSC 4 RCs Config"
          cp /etc/FSC_FBRC_DVT_4RC_config.json ${default_fsc_config_path}
+       ;;
+       "8738")
+         echo "Run FSC 4 EPs Config"
+         cp /etc/FSC_FBEP_DVT_4EP_config.json ${default_fsc_config_path}
+       ;;
+       "17476")
+         echo "Run FSC 4 NDs Config"
+         cp /etc/FSC_FBND_EVT_4ND_config.json ${default_fsc_config_path}
        ;;
        *)
          echo "Unexpected 4 Servers config! Run FSC 4 TLs Config as default config"
@@ -68,29 +84,45 @@ case "$sku_type" in
        ;;
      esac
    ;;
-   "34")
-     if [[ $(get_server_type 2) == "0" && $(get_server_type 4) == "0" ]] ; then  
+   "514")
+     if [[ $(get_server_type 2) == "0" && $(get_server_type 4) == "0" ]] ; then
        echo "Run FSC 2 GPs and 2 TLs Config"
        cp /etc/FSC_FBY2_PVT_2GP_2TL_config.json ${default_fsc_config_path}
      elif [[ $(get_server_type 2) == "1" && $(get_server_type 4) == "1" ]] ; then
        echo "Run FSC 4 RCs Config"
-       cp /etc/FSC_FBRC_DVT_4RC_config.json ${default_fsc_config_path}   
+       cp /etc/FSC_FBRC_DVT_4RC_config.json ${default_fsc_config_path}
+     elif [[ $(get_server_type 2) == "2" && $(get_server_type 4) == "2" ]] ; then
+       echo "Run FSC 2 GPs and 2 EPs Config"
+       cp /etc/FSC_FBEP_DVT_2GP_2EP_config.json ${default_fsc_config_path}
+     elif [[ $(get_server_type 2) == "4" && $(get_server_type 4) == "4" ]] ; then
+       echo "Run FSC 4 NDs Config"
+       cp /etc/FSC_FBND_EVT_4ND_config.json ${default_fsc_config_path}
      else
        echo "Unexpected 2 GPs and 2 Servers config! Run FSC 2 GPs and 2 TLs Config as default config"
        cp /etc/FSC_FBY2_PVT_2GP_2TL_config.json ${default_fsc_config_path}
      fi
    ;;
-   "17")
+   "257")
      if [[ $(get_server_type 2) == "0" && $(get_server_type 4) == "0" ]] ; then
        echo "Run FSC 2 CFs and 2 TLs Config"
        cp /etc/FSC_FBY2_PVT_2CF_2TL_config.json ${default_fsc_config_path}
      elif [[ $(get_server_type 2) == "1" && $(get_server_type 4) == "1" ]] ; then
        echo "Run FSC 4 RCs Config"
        cp /etc/FSC_FBRC_DVT_4RC_config.json ${default_fsc_config_path}
+     elif [[ $(get_server_type 2) == "2" && $(get_server_type 4) == "2" ]] ; then
+       echo "Run FSC 4 EPs Config"
+       cp /etc/FSC_FBEP_DVT_4EP_config.json ${default_fsc_config_path}
+     elif [[ $(get_server_type 2) == "4" && $(get_server_type 4) == "4" ]] ; then
+       echo "Run FSC 4 NDs Config"
+       cp /etc/FSC_FBND_EVT_4ND_config.json ${default_fsc_config_path}
      else
        echo "Unexpected 2 CFs and 2 Servers config! Run FSC 2 CFs and 2 TLs Config as default config"
        cp /etc/FSC_FBY2_PVT_2CF_2TL_config.json ${default_fsc_config_path}
      fi
+   ;;
+   "1028")
+     echo "Run FSC 2 GPV2s and 2 TLs Config"
+     cp /etc/FSC_FBGPV2_EVT_config.json ${default_fsc_config_path}
    ;;
    *)
      server_type_tmp="3"
@@ -104,19 +136,32 @@ case "$sku_type" in
      if [ "$server_type_tmp" == "1" ] ; then
        echo "Unexpected sku type! Use FSC 4 RCs Config as default config"
        cp /etc/FSC_FBRC_DVT_4RC_config.json ${default_fsc_config_path}
+     elif [ "$server_type_tmp" == "2" ] ; then
+       echo "Unexpected sku type! Use FSC 4 EPs Config as default config"
+       cp /etc/FSC_FBEP_DVT_4EP_config.json ${default_fsc_config_path}
+     elif [ "$server_type_tmp" == "4" ] ; then
+       echo "Unexpected sku type! Use FSC 4 NDs Config as default config"
+       cp /etc/FSC_FBND_EVT_4ND_config.json ${default_fsc_config_path}
      else
        echo "Unexpected sku type! Use FSC 4 TLs Config as default config"
        cp /etc/FSC_FBY2_PVT_4TL_config.json ${default_fsc_config_path}
-     fi  
+     fi
    ;;
 esac
 
 /usr/local/bin/init_pwm.sh
-/usr/local/bin/fan-util --set 50
+if [ ! -f /tmp/cache_store/setup_fan_config ]; then
+  logger -p user.warning "Setup fan config"
+  /usr/local/bin/check_fan_config.sh
+  echo 1 > /tmp/cache_store/setup_fan_config
+fi
+/usr/local/bin/fan-util --set 70
 runsv /etc/sv/fscd > /dev/null 2>&1 &
+logger -p user.info "fscd started"
 
-# Check SLED in/out 
+# Check SLED in/out
 if [ $(gpio_get H5) = 1 ]; then
+   logger -p user.warning "SLED not seated, fscd stopped, set fan speed to 100%"
    sv stop fscd
    /usr/local/bin/fan-util --set 100
 fi

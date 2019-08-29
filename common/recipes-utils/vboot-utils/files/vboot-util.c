@@ -1,18 +1,85 @@
 #include <stdio.h>
 #include <sys/mman.h>
-#include <sys/stat.h> 
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
 #include <syslog.h>
+#include <stdlib.h>
 #include <openbmc/vbs.h>
+
+bool get_mtd_name(char* mtd_name)
+{
+    FILE* partitions = fopen("/proc/mtd", "r");
+    char line[256], mnt_name[32];
+    char uboot_name[] = "\"u-bootro\"";
+    unsigned int mtd_no;
+    bool found = false;
+
+    if (!partitions) {
+      return false;
+    }
+    while (fgets(line, sizeof(line), partitions)) {
+      if (sscanf(line, "mtd%d: %*x %*x %s",
+            &mtd_no, mnt_name) == 2)  {
+        if (!strcmp(uboot_name, mnt_name)) {
+          sprintf(mtd_name, "/dev/mtd%d", mtd_no);
+          found = true;
+          break;
+        }
+      }
+    }
+    fclose(partitions);
+    return found;
+}
+
+bool get_rom_ver(char *buf)
+{
+  char mtd_name[32];
+  if (!get_mtd_name(mtd_name)) {
+    return false;
+  }
+
+  char cmd[128];
+  FILE *fp;
+  snprintf(cmd, sizeof(cmd),
+      "strings %s | grep -E 'U-Boot 20[[:digit:]]{2}\\.[[:digit:]]{2}'", mtd_name);
+  fp = popen(cmd, "r");
+  if (!fp) {
+    return false;
+  }
+
+  char line[256];
+  char *ver = 0;
+  bool found = false;
+  while (fgets(line, sizeof(line), fp)) {
+    int ret;
+    ret = sscanf(line, "U-Boot 20%*2d.%*2d%*[ ]%m[^ \n]%*[ ](%*[^)])\n", &ver);
+    if (ret == 1) {
+      sprintf(buf, "%s", ver);
+      found = true;
+      break;
+    }
+  }
+  if (ver)
+    free(ver);
+
+  pclose(fp);
+  return found;
+}
 
 int main(int argc, char *argv[])
 {
   char buf[128];
-  struct vbs *v = vboot_status();
+  struct vbs *v;
 
+  if (!vboot_supported()) {
+    printf("Verified boot is not supported on this platform!\n");
+    return 0;
+  }
+
+  v = vboot_status();
   if (!v) {
     printf("ERROR: Could not read the verified boot status\n");
     return -1;
@@ -41,6 +108,10 @@ int main(int argc, char *argv[])
   printf("Flags recovery_boot:     0x%02x\n", v->recovery_boot);
   printf("Flags recovery_retried:  0x%02x\n", v->recovery_retries);
   printf("\n");
+  if (get_rom_ver(buf)) {
+    printf("ROM U-Boot version:      %s\n", buf);
+    printf("\n");
+  }
   printf("Status CRC: 0x%04x\n", v->crc);
   printf("TPM status  (%d)\n", v->error_tpm);
   printf("Status type (%d) code (%d)\n", v->error_type, v->error_code);

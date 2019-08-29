@@ -20,30 +20,28 @@
 
 
 import subprocess
-import bmc_command
+
+from rest_utils import DEFAULT_TIMEOUT_SEC
 
 
 def get_mTerm_status():
     result = []
-    proc = subprocess.Popen(['ps | grep mTerm'],
-                            shell=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        ["ps | grep mTerm"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     try:
-        data, err = bmc_command.timed_communicate(proc)
-    except bmc_command.TimeoutError as ex:
+        data, err = proc.communicate(timeout=DEFAULT_TIMEOUT_SEC)
+    except proc.TimeoutError as ex:
         data = ex.output
         err = ex.error
 
-    is_running = 'Not Running'
-    if b'mTerm_server' in data:
-        is_running = 'Running'
+    is_running = "Not Running"
+    if b"mTerm_server" in data:
+        is_running = "Running"
 
     result = {
-                "Information": {
-                    "mTerm Server Status": is_running,
-                },
-                "Actions": [],
-                "Resources": [],
-             }
+        "Information": {"mTerm Server Status": is_running},
+        "Actions": [],
+        "Resources": [],
+    }
     return result

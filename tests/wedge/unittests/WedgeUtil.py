@@ -1,3 +1,23 @@
+#!/usr/bin/env python
+#
+# Copyright 2018-present Facebook. All Rights Reserved.
+#
+# This program file is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; version 2 of the License.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program in a file named COPYING; if not, write to the
+# Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301 USA
+#
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -22,8 +42,15 @@ class WedgeUtil(BaseUtil.BaseUtil):
     # Fans
     GetFanCmd = '/usr/local/bin/get_fan_speed.sh 1'
     SetFanCmd = '/usr/local/bin/set_fan_speed.sh 0'
-    KillControlCmd = ['/usr/local/bin/watchdog_ctrl.sh off', '/usr/bin/killall -USR1 fand']
+    KillControlCmd = ['/usr/local/bin/wdtcli stop', '/usr/bin/killall -USR1 fand']
     StartControlCmd = 'sh /etc/init.d/setup-fan.sh'
+
+    # watchdog
+    watchdogDaemonKill = ['/usr/bin/killall fand']
+    watchdogDaemonRestore = ['/bin/sh /etc/init.d/setup-fan.sh']
+
+    # Host Mac
+    HostMacCmd = '/usr/local/bin/wedge_us_mac.sh'
 
     def get_speed(self, info):
         """
@@ -69,6 +96,3 @@ class WedgeUtil(BaseUtil.BaseUtil):
             return True
         else:
             return False
-
-    # watchdog
-    daemonProcessesKill = ['/usr/bin/killall fand']

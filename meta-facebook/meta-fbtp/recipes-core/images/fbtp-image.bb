@@ -17,7 +17,6 @@ IMAGE_INSTALL += " \
   openbmc-utils \
   at93cx6-util \
   ast-mdio \
-  watchdog-ctrl \
   lldp-util \
   bitbang \
   flashrom \
@@ -50,8 +49,10 @@ IMAGE_INSTALL += " \
   bios-util \
   vboot-utils \
   crashdump \
+  libncsi \
   ncsi-util \
   ncsid \
+  libpldm \
   "
 
 IMAGE_FEATURES += " \

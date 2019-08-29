@@ -23,11 +23,12 @@
 #include <unistd.h>
 #include <errno.h>
 #include <syslog.h>
+#include <signal.h>
 #include <time.h>
 #include "mTerm_helper.h"
 #include "tty_helper.h"
 
-static char g_fru[10];
+static char g_fru[16];
 
 void setFru(char *dev) {
     strncpy(g_fru, dev, sizeof(g_fru));
@@ -186,6 +187,46 @@ void writeTimestampToBuffer(bufStore *buf) {
   writeData(buf->buf_fd, dateBuff, strlen(dateBuff), "buffer");
 }
 
+int backupBuffer(bufStore *buf) {
+  int ret = 0;
+  int in_fd, out_fd;
+  ssize_t r_cnt, w_cnt;
+  uint8_t rd_buf[1024];
+
+  in_fd = open(buf->file, O_RDONLY);
+  if (in_fd < 0) {
+    perror("Cannot open the mTerm buffer log file");
+    return -1;
+  }
+
+  out_fd = open(buf->backupfile, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  if (out_fd < 0) {
+    perror("Cannot create the mTerm backup buffer log file");
+    close(in_fd);
+    return -1;
+  }
+
+  while (1) {
+    r_cnt = read(in_fd, rd_buf, sizeof(rd_buf));
+    if (r_cnt <= 0) {
+      if (r_cnt < 0) {
+        ret = -1;
+      }
+      break;
+    }
+
+    w_cnt = write(out_fd, rd_buf, r_cnt);
+    if (w_cnt != r_cnt) {
+      ret = -1;
+      break;
+    }
+  }
+
+  close(in_fd);
+  close(out_fd);
+  return ret;
+}
+
 void writeToBuffer(bufStore *buf, char* data, int len) {
    bool rotate = false;
    struct stat file_stat;
@@ -195,7 +236,13 @@ void writeToBuffer(bufStore *buf, char* data, int len) {
    if (rc != 0) {
      if (errno == ENOENT) {
        // Maybe someone externally removed our buffer file. Force file rotation.
-       rotate = true;
+       close(buf->buf_fd);
+       buf->buf_fd = open(buf->file, O_RDWR | O_CREAT | O_TRUNC, 0666);
+       if (buf->buf_fd < 0) {
+         perror("Cannot open the mTerm buffer log file");
+         exit(-1);
+       }
+       syncfs(buf->buf_fd);
      } else {
        // We couldn't figure out if the file needs to be rotated.
        // Don't rotate the file.  Continue and log the data anyway, though.
@@ -210,13 +257,10 @@ void writeToBuffer(bufStore *buf, char* data, int len) {
 
    // Rollover to a backup file when buffer hits filesize
    if (rotate) {
-     close(buf->buf_fd);
-     rename(buf->file, buf->backupfile);
-     buf->buf_fd = open(buf->file, O_RDWR | O_APPEND | O_CREAT, 0666) ;
-     if (buf->buf_fd < 0) {
-       perror("Cannot open the mTerm buffer log file");
-       exit(-1);
-     }
+     backupBuffer(buf);
+     ftruncate(buf->buf_fd, 0);
+     syncfs(buf->buf_fd);
+     lseek(buf->buf_fd, 0, SEEK_SET);
    }
 
   /*

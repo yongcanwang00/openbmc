@@ -17,15 +17,15 @@
 # 51 Franklin Street, Fifth Floor,
 # Boston, MA 02110-1301 USA
 #
-from aiohttp import web
-import rest_fruid_scm
 import rest_chassis_eeprom
-import rest_seutil
-import rest_sol
-import rest_usb2i2c_reset
 import rest_firmware
+import rest_fruid_scm
 import rest_i2cflush
+import rest_seutil
+import rest_usb2i2c_reset
+from aiohttp import web
 from rest_utils import dumps_bytestr, get_endpoints
+
 
 class boardApp_Handler:
 
@@ -35,16 +35,13 @@ class boardApp_Handler:
 
     # Handler for sys/mb/seutil resource endpoint
     async def rest_chassis_eeprom_hdl(self, request):
-        return web.json_response(rest_chassis_eeprom.get_chassis_eeprom(), dumps=dumps_bytestr)
+        return web.json_response(
+            rest_chassis_eeprom.get_chassis_eeprom(), dumps=dumps_bytestr
+        )
 
     # Handler for sys/mb/seutil resource endpoint
     async def rest_seutil_hdl(self, request):
         return web.json_response(rest_seutil.get_seutil(), dumps=dumps_bytestr)
-
-    # Handler for SOL resource endpoint
-    async def rest_sol_act_hdl(self, request):
-        data = await request.json()
-        return web.json_response(rest_sol.sol_action(data), dumps=dumps_bytestr)
 
     # Handler to reset usb-to-i2c
     async def rest_usb2i2c_reset_hdl(self, request):

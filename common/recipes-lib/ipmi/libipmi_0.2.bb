@@ -21,11 +21,15 @@ PR = "r1"
 LICENSE = "GPLv2"
 LIC_FILES_CHKSUM = "file://ipmi.c;beginline=8;endline=20;md5=da35978751a9d71b73679307c4d296ec"
 
+BBCLASSEXTEND = "native"
 
 SRC_URI = "file://Makefile \
            file://ipmi.c \
            file://ipmi.h \
           "
+
+DEPENDS += "libipc"
+RDEPENDS_${PN} += "libipc"
 
 S = "${WORKDIR}"
 

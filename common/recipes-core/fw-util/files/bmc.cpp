@@ -7,18 +7,21 @@
 #include <fcntl.h>
 #include <algorithm>
 #include <sys/mman.h>
+#include <syslog.h>
 #include "bmc.h"
 
 using namespace std;
 
 #define BMC_RW_OFFSET               (64 * 1024)
 #define ROMX_SIZE                   (84 * 1024)
+
 int BmcComponent::update(string image_path)
 {
   string dev;
   int ret;
   string flash_image = image_path;
   stringstream cmd_str;
+
   if (_mtd_name == "") {
     // Upgrade not supported
     return FW_STATUS_NOT_SUPPORTED;
@@ -33,6 +36,9 @@ int BmcComponent::update(string image_path)
     system.error << "Failed to get device for " << _mtd_name << endl;
     return FW_STATUS_FAILURE;
   }
+
+  syslog(LOG_CRIT, "BMC fw upgrade initiated");
+
   system.output << "Flashing to device: " << dev << endl;
   if (_skip_offset > 0 || _writable_offset > 0) {
     flash_image = image_path + "-tmp";
@@ -97,12 +103,57 @@ int BmcComponent::update(string image_path)
     // this is a temp. file, remove it.
     remove(flash_image.c_str());
   }
+
+  // If flashcp cmd was successful, keep historical info that BMC fw was upgraded
+  if (ret == 0) {
+    syslog(LOG_CRIT, "BMC fw upgrade completed. Version: %s", get_bmc_version(dev).c_str());
+  }
+
   return ret;
+}
+
+std::string BmcComponent::get_bmc_version()
+{
+  std::string bmc_ver = "NA";
+  std::string mtd;
+  if (!system.get_mtd_name(_vers_mtd, mtd)) {
+    return bmc_ver;
+  }
+  return get_bmc_version(mtd);
+}
+
+std::string BmcComponent::get_bmc_version(const std::string &mtd)
+{
+  // parsering the image to get the version string
+  std::string bmc_ver = "NA";
+  char cmd[128];
+  FILE *fp;
+
+  snprintf(cmd, sizeof(cmd),
+      "strings %s | grep -E 'U-Boot 20[[:digit:]]{2}\\.[[:digit:]]{2}'", mtd.c_str());
+  fp = popen(cmd, "r");
+  if (fp) {
+    char line[256];
+    char *ver = 0;
+    while (fgets(line, sizeof(line), fp)) {
+      int ret;
+      ret = sscanf(line, "U-Boot 20%*2d.%*2d%*[ ]%m[^ \n]%*[ ](%*[^)])\n", &ver);
+      if (1 == ret) {
+        bmc_ver = ver;
+        break;
+      }
+    }
+    if (ver) {
+       free(ver);
+    }
+    pclose(fp);
+  }
+
+  return bmc_ver;
 }
 
 int BmcComponent::print_version()
 {
-  char vers[128] = "NA";
   string mtd;
 
   string comp = _component;
@@ -113,26 +164,7 @@ int BmcComponent::print_version()
     return FW_STATUS_SUCCESS;
   }
 
-  if (system.get_mtd_name(_vers_mtd, mtd)) {
-    char cmd[128];
-    FILE *fp;
-    sprintf(cmd, "strings %s | grep 'U-Boot 2016.07'", mtd.c_str());
-    fp = popen(cmd, "r");
-    if (fp) {
-      char line[256];
-      char min[32];
-      while (fgets(line, sizeof(line), fp)) {
-        int ret;
-        ret = sscanf(line, "U-Boot 2016.07%*[ ]%[^ \n]%*[ ](%*[^)])\n", min);
-        if (ret == 1) {
-          sprintf(vers, "%s", min);
-          break;
-        }
-      }
-      pclose(fp);
-    }
-  }
-  system.output << comp << " Version: " << string(vers) << endl;
+  system.output << comp << " Version: " << get_bmc_version() << endl;
   return FW_STATUS_SUCCESS;
 }
 
@@ -148,10 +180,11 @@ class SystemConfig {
       dual_flash = false;
     }
     if (dual_flash) {
-      if (system.get_mtd_name("romx")) {
+      int vboot = system.vboot_support_status();
+      if (vboot != VBOOT_NO_SUPPORT)  {
         // If verified boot is enabled, we should
         // have the romx partition
-        if (system.vboot_hardware_enforce()) {
+        if (vboot == VBOOT_HW_ENFORCE) {
           // Locked down, Update from a 64k offset.
           static BmcComponent bmc("bmc", "bmc", system, "flash1rw", "u-boot", BMC_RW_OFFSET, ROMX_SIZE);
           // Locked down, Allow getting version of ROM, but do not allow
@@ -168,7 +201,7 @@ class SystemConfig {
         static BmcComponent bmc("bmc", "bmc", system, "flash0", "u-boot");
         // Dual flash supported, but not in verified boot format.
         // Allow flashing the second flash. Read version from u-boot partition.
-        static BmcComponent bmcalt("bmc", "flash1", system, "flash1", "u-boot");
+        static BmcComponent bmcalt("bmc", "altbmc", system, "flash1", "u-bootx");
       }
       // Verified boot supported and in dual-flash mode.
     } else {

@@ -1,6 +1,6 @@
 # Copyright 2018-present Facebook. All Rights Reserved.
 
-inherit aspeed_uboot_image
+inherit kernel_fitimage
 
 require recipes-core/images/fb-openbmc-image.bb
 
@@ -16,10 +16,13 @@ IMAGE_INSTALL += " \
   at93cx6-util \
   ast-mdio \
   bcm5396-util \
+  bic-cached \
   bic-util \
   bitbang \
   cpldupdate \
   cpldupdate-i2c \
+  crashdump \
+  e2fsprogs \
   flashrom \
   front-paneld \
   fscd \
@@ -31,18 +34,20 @@ IMAGE_INSTALL += " \
   libcpldupdate-dll-gpio \
   lldp-util \
   log-util \
-  m95m02-util \
   mterm \
   openbmc-gpio \
   openbmc-utils \
+  psu-util \
   sensor-setup \
+  sensor-util \
   sensor-mon \
   spatula \
+  threshold-util \
   trousers \
   tpm-tools \
   usb-console \
-  watchdog-ctrl \
   wedge-eeprom \
+  weutil-dhcp-id \
   "
 IMAGE_FEATURES += " \
   ssh-server-openssh \

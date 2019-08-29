@@ -17,13 +17,15 @@
 # 51 Franklin Street, Fifth Floor,
 # Boston, MA 02110-1301 USA
 #
-
+import json
 import re
 from subprocess import *
+
 from node import node
 
+
 class logsNode(node):
-    def __init__(self, name, info = None, actions = None):
+    def __init__(self, name, info=None, actions=None):
         self.name = name
 
         if info == None:
@@ -37,58 +39,27 @@ class logsNode(node):
 
     def getInformation(self, param={}):
         linfo = []
-        cmd = '/usr/local/bin/log-util ' + self.name +' --print'
+        cmd = "/usr/local/bin/log-util " + self.name + " --print" + " --json"
         data = Popen(cmd, shell=True, stdout=PIPE).stdout.read()
         data = data.decode()
-        sdata = data.split('\n')
-        for line in sdata:
-            # skip lines with --- or startin with FRU
-            if line.startswith( 'FRU' ):
-                continue
+        return json.loads(data)
 
-            # skip empty lines
-            if line in ['\n', '\r\n']:
-                continue
-
-            line = line.rstrip()
-            cells = re.split("\s{2,}", line, maxsplit=4)
-            if (len(cells) != 5):
-                continue
-
-            temp = {
-                    "FRU#": cells[0],
-                    "FRU_NAME": cells[1],
-                    "TIME_STAMP": cells[2],
-                    "APP_NAME": cells[3],
-                    "MESSAGE": cells[4],
-                   }
-
-            linfo.append(temp)
-
-        result = { "Logs": linfo }
-        return result
-
-    def doAction(self, data, is_read_only=True):
-        if is_read_only:
-            result = { "result": 'failure' }
+    def doAction(self, data, param={}):
+        if data["action"] != "clear":
+            res = "failure"
         else:
-            if data["action"] != "clear":
-                res = 'failure'
+            cmd = "/usr/local/bin/log-util " + self.name + " --clear"
+            data = Popen(cmd, shell=True, stdout=PIPE).stdout.read()
+            data = data.decode()
+            if data.startswith("Usage"):
+                res = "failure"
             else:
-                cmd = '/usr/local/bin/log-util ' + self.name +' --clear'
-                data = Popen(cmd, shell=True, stdout=PIPE).stdout.read()
-                data = data.decode()
-                if data.startswith( 'Usage' ):
-                    res = 'failure'
-                else:
-                    res = 'success'
-            result = { "result": res }
+                res = "success"
+        result = {"result": res}
 
         return result
 
-def get_node_logs(name, is_read_only=True):
-    if is_read_only:
-        actions =  []
-    else:
-        actions = [ "clear" ]
-    return logsNode(name = name, actions = actions)
+
+def get_node_logs(name):
+    actions = ["clear"]
+    return logsNode(name=name, actions=actions)

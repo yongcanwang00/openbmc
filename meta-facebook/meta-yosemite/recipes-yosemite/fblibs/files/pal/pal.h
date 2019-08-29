@@ -36,14 +36,6 @@ extern "C" {
 #define MAX_NUM_FAN     2
 #define MAX_DATA_NUM    2000
 
-#define FRU_STATUS_GOOD   1
-#define FRU_STATUS_BAD    0
-
-#define SETBIT(x, y)        (x | (1 << y))
-#define GETBIT(x, y)        ((x & (1 << y)) > y)
-#define CLEARBIT(x, y)      (x & (~(1 << y)))
-#define GETMASK(y)          (1 << y)
-
 #define MAX_NODES 4
 
 extern char * key_list[];
@@ -62,18 +54,6 @@ enum {
 enum {
   USB_MUX_OFF,
   USB_MUX_ON,
-};
-
-enum {
-  SERVER_POWER_OFF,
-  SERVER_POWER_ON,
-  SERVER_POWER_CYCLE,
-  SERVER_POWER_RESET,
-  SERVER_GRACEFUL_SHUTDOWN,
-  SERVER_12V_OFF,
-  SERVER_12V_ON,
-  SERVER_12V_CYCLE,
-  SERVER_GLOBAL_RESET,
 };
 
 enum {
@@ -169,13 +149,13 @@ int pal_fan_recovered_handle(int fan_num);
 int pal_get_boot_order(uint8_t slot, uint8_t *req_data, uint8_t *boot, uint8_t *res_len);
 int pal_set_boot_order(uint8_t slot, uint8_t *boot, uint8_t *res_data, uint8_t *res_len);
 int pal_is_crashdump_ongoing(uint8_t slot);
-bool pal_is_fw_update_ongoing(uint8_t fru);
 int pal_init_sensor_check(uint8_t fru, uint8_t snr_num, void *snr);
 void pal_sensor_assert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh);
 void pal_sensor_deassert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh);
 void pal_post_end_chk(uint8_t *post_end_chk);
 int pal_get_fw_info(uint8_t fru, unsigned char target, unsigned char* res, unsigned char* res_len);
 void pal_add_cri_sel(char *str);
+int pal_force_update_bic_fw(uint8_t slot_id, uint8_t comp, char *path);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -20,238 +20,270 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <libgen.h>
 #include <assert.h>
 #include <jansson.h>
 #include "aggregate-sensor.h"
 #include <openbmc/kv.h>
 #include <openbmc/obmc-sensor.h>
+#include <openbmc/cmock.h>
 
-#define MAX_TEST_SENSORS 32
-#define MAX_TEST_VALUE_MAP_SIZE 32
+DECLARE_MOCK_FUNC(int, kv_get, char *, char *, size_t *, unsigned int);
+DECLARE_MOCK_FUNC(int, sensor_cache_read, uint8_t, uint8_t, float *);
 
-typedef struct {
-  char    name[32];
-  uint8_t fru;
-  uint8_t snr;
-  float curr_val;
-  int   curr_ret;
-} sensor_test_t;
-
-sensor_test_t test_sensors[MAX_TEST_SENSORS];
-size_t        num_test_sensors = 0;
-char          test_values[MAX_TEST_VALUE_MAP_SIZE][MAX_VALUE_LEN];
-size_t        num_test_values = 0;
-
-char          *curr_val = NULL;
-
-int kv_get(char *key, char *value, size_t *len, unsigned int flags)
+static void init_sensors(const char *json_file, size_t exp_sensors)
 {
-  if (curr_val) {
-    strcpy(value, curr_val);
-    if (len) {
-      *len = strlen(value);
+  int ret;
+  size_t cnt;
+
+  ret = aggregate_sensor_init(json_file);
+  ASSERT(ret == 0, "Initialization");
+  ret = aggregate_sensor_count(&cnt);
+  ASSERT(ret == 0, "Getting count succeeds");
+  ASSERT(cnt == exp_sensors, "Expected sensors");
+}
+
+DEFINE_TEST(test_bad_source_exp)
+{
+  int ret;
+  ret = aggregate_sensor_init("./test_lexp_bad_sexp.json");
+  ASSERT_NEQ(ret, 0, "Fail loading non-existant conf.");
+}
+
+DEFINE_TEST(test_null)
+{
+  init_sensors("./test_null.json", 0);
+}
+
+DEFINE_TEST(test_lexp)
+{
+  char got_name[64] = {0};
+  int ret;
+  float val;
+
+  init_sensors("./test_lexp.json", 1);
+  ASSERT(aggregate_sensor_name(0, got_name) == 0, "Read sensor name");
+  ASSERT_EQ_STR(got_name, "test1", "Matching sensor name");
+  ASSERT(aggregate_sensor_units(0, got_name) == 0, "Read sensor units");
+  ASSERT_EQ_STR(got_name, "TEST1", "Matching sensor units");
+
+  int mocked_read1(uint8_t fru, uint8_t snr, float *value) {
+    ASSERT((fru == 1 && snr == 1) || (fru == 2 && snr == 2), "Expected FRU/SNRID");
+    if (snr == 2) {
+      *value = 2.0;
+      return 0;
     }
-    return 0;
-  }
-  return -1;
-}
-
-int sensor_cache_read(uint8_t fru, uint8_t snr_num, float *value)
-{
-  size_t i;
-  for (i = 0; i < num_test_sensors; i++) {
-    sensor_test_t *s = &test_sensors[i];
-    if (s->fru == fru && s->snr == snr_num) {
-      *value = s->curr_val;
-      return s->curr_ret;
-    }
-  }
-  return -1;
-}
-
-static json_t *get_sensor(const char *file, size_t num)
-{
-  static json_t *conf = NULL;
-  json_t *tmp;
-
-  if (!conf) {
-    json_error_t error;
-    conf = json_load_file(file, 0, &error);
-    assert(conf);
-  }
-
-  tmp = json_object_get(conf, "sensors");
-  assert(tmp);
-  tmp = json_array_get(tmp, num);
-  assert(tmp);
-  return tmp;
-}
-
-static void load_test_params(const char *file, size_t num)
-{
-  json_t *tmp = get_sensor(file, num);
-  json_t *tmp2, *iter;
-  size_t i;
-
-  /* Reset previous test loads */
-  memset(test_sensors, 0, sizeof(test_sensors));
-  num_test_sensors = 0;
-  memset(test_values, 0, sizeof(test_values));
-  num_test_values = 0;
-
-  tmp = json_object_get(tmp, "composition");
-  assert(tmp);
-  tmp2 = json_object_get(tmp, "sources");
-  num_test_sensors = json_object_size(tmp2);
-  for (i = 0, iter = json_object_iter(tmp2);
-      i < num_test_sensors && iter;
-      i++, iter = json_object_iter_next(tmp2, iter)) {
-    const char *name = json_object_iter_key(iter);
-    json_t *val = json_object_iter_value(iter);
-    json_t *o;
-    assert(name);
-    assert(val);
-    strcpy(test_sensors[i].name, name);
-
-    o = json_object_get(val, "fru");
-    assert(o);
-    assert(json_is_number(o));
-    test_sensors[i].fru = json_integer_value(o);
-    o = json_object_get(val, "sensor_id");
-    assert(o);
-    assert(json_is_number(o));
-    test_sensors[i].snr = json_integer_value(o);
-  }
-  tmp2 = json_object_get(tmp, "type");
-  assert(tmp2);
-  if (!strcmp(json_string_value(tmp2), "conditional_linear_expression")) {
-    tmp2 = json_object_get(tmp, "condition");
-    assert(tmp2);
-    tmp2 = json_object_get(tmp2, "value_map");
-    assert(tmp2);
-    for (i = 0, iter = json_object_iter(tmp2);
-        i < MAX_TEST_VALUE_MAP_SIZE && iter;
-        iter = json_object_iter_next(tmp2, iter), i++) {
-      const char *key = json_object_iter_key(iter);
-      json_t *val = json_object_iter_value(iter);
-      assert(key);
-      assert(val);
-      assert(json_is_string(val));
-      strncpy(test_values[num_test_values], key, MAX_VALUE_LEN);
-      num_test_values++;
-    }
-  }
-}
-
-void set_all_sensors_valid(void)
-{
-  int i;
-  for (i = 0; i < num_test_sensors; i++) {
-    test_sensors[i].curr_ret = 0;
-    test_sensors[i].curr_val = 10.0;
-  }
-}
-
-bool test_sensor_ret(size_t num, bool should_pass)
-{
-  float value;
-  int ret = aggregate_sensor_read(num, &value);
-  if (should_pass) {
-    if (ret != 0) {
-      assert(0);
-    }
-  } else {
-    if (ret == 0) {
-      assert(0);
-    }
-  }
-  return true;
-}
-
-void test_sensor_values(size_t num, bool accepted_value)
-{
-  int i;
-  for (i = 0; i < num_test_sensors; i++) {
-    set_all_sensors_valid();
-    test_sensors[i].curr_val = 0;
-    test_sensors[i].curr_ret = -1;
-    printf("SNR: -1 fail expected: PASSED: %d\n", test_sensor_ret(num, false));
-    test_sensors[i].curr_ret = -2;
-    printf("SNR: -2 fail expected: PASSED: %d\n", test_sensor_ret(num, false));
-  }
-  set_all_sensors_valid();
-  printf("SNR: -2 fail expected: PASSED: %d\n", test_sensor_ret(num, accepted_value));
-}
-
-int test_sensor(const char *file, size_t num, const char *name)
-{
-  int i;
-  printf("Testing sensor %zu (%s)\n", num, name);
-  load_test_params(file, num);
-  printf("Sensors (%zu): ", num_test_sensors);
-  for (i = 0; i < num_test_sensors; i++) {
-    sensor_test_t *t = &test_sensors[i];
-    printf("{%s %u %u} ", t->name, t->fru, t->snr);
-  }
-  printf("\nValues: ");
-  for (i = 0; i < num_test_values; i++) {
-    printf("%s ", test_values[i]);
-  }
-  printf("\n");
-
-  for (i = 0; i < num_test_values; i++) {
-    curr_val = test_values[i];
-    test_sensor_values(num, true);
-  }
-  curr_val = "INVALID_VALUE";
-  test_sensor_values(num, true); // TODO check if default is set
-  curr_val = NULL;
-  test_sensor_values(num, true); // TODO check if default is set
-
-  return 0;
-}
-
-int aggregate_sensor_test(const char *file)
-{
-  size_t num = 0, i;
-  if (aggregate_sensor_init(file)) {
-    printf("Sensor initialization failed!\n");
     return -1;
   }
+  MOCK(sensor_cache_read, mocked_read1);
+  ret = aggregate_sensor_read(0, &val);
+  // One of the sensors failed.
+  ASSERT_NEQ(ret, 0, "sensor read failed as expected");
+  ASSERT_CALL_COUNT(sensor_cache_read, 1, 2, "sensor_cache_read was called at least once");
+  MOCK_END(sensor_cache_read);
 
-  aggregate_sensor_conf_print(false);
-
-  if (aggregate_sensor_count(&num)) {
-    printf("Getting sensor count failed!\n");
+  int mocked_read2(uint8_t fru, uint8_t snr, float *value) {
+    if (snr == 1) {
+      *value = 0.0;
+      return 0;
+    }
     return -1;
   }
-  if (num == 0) {
-    printf("No sensors! Nothing to do\n");
+  MOCK(sensor_cache_read, mocked_read2);
+  ret = aggregate_sensor_read(0, &val);
+  ASSERT_NEQ(ret, 0, "Sensor read failed as expected");
+  ASSERT_CALL_COUNT(sensor_cache_read, 1, 2, "sensor read called at least once");
+  MOCK_END(sensor_cache_read);
+
+  int mocked_read3(uint8_t fru, uint8_t snr, float *value) {
+    ASSERT((fru == 1 && snr == 1) || (fru == 2 && snr == 2), "Expected FRU/SNRID");
+    *value = snr == 1 ? 1.0 : 2.0;
     return 0;
   }
-  for(i = 0; i < num; i++) {
-    char sensor_name[128];
-    char sensor_unit[128];
-    int ret;
+  MOCK(sensor_cache_read, mocked_read3);
+  ret = aggregate_sensor_read(0, &val);
+  ASSERT_EQ(ret, 0, "sensor read succeeded");
+  /* 2.0*1.0 + 3.0*2.0 - 3.0 = 5.0 */
+  ASSERT_EQ_FLT(val, 5.0, "Sensor read returned correct value");
+  ASSERT_CALL_COUNT(sensor_cache_read, 2, 2, "sensor read called exactly twice");
+  MOCK_END(sensor_cache_read);
 
-    if (aggregate_sensor_name(i, sensor_name) ||
-        aggregate_sensor_units(i, sensor_unit)) {
-      printf("[%zu] Getting name/unit failed\n", i);
-      continue;
+  // Ensure any sensor returns success.
+  MOCK_RETURN(sensor_cache_read, 0);
+  ret = aggregate_sensor_read(1, &val);
+  ASSERT(ret != 0, "sensor correctly failed to read invalid agg-sensor");
+  ASSERT_CALL_COUNT(sensor_cache_read, 0, 0, "Sensor read correctly never called");
+  MOCK_END(sensor_cache_read);
+}
+
+DEFINE_TEST(test_cond_lexp)
+{
+  float val;
+  int ret;
+  char got_name[64];
+
+  init_sensors("./test_clexp.json", 2);
+  ASSERT(aggregate_sensor_name(0, got_name) == 0, "sensor1 name read success");
+  ASSERT_EQ_STR(got_name, "test_np", "Sensor1 name correct");
+  ASSERT(aggregate_sensor_units(0, got_name) == 0, "Sensor1 units read success");
+  ASSERT_EQ_STR(got_name, "TEST", "Sensor1 units correct");
+  ASSERT(aggregate_sensor_name(1, got_name) == 0, "sensor2 name read success");
+  ASSERT_EQ_STR(got_name, "test_p", "Sensor2 name correct");
+  ASSERT(aggregate_sensor_units(1, got_name) == 0, "Sensor2 units read success");
+  ASSERT_EQ_STR(got_name, "TEST", "Sensor2 units correct");
+
+  MOCK_RETURN(sensor_cache_read, 0);
+  MOCK_RETURN(kv_get, -1);
+  ret = aggregate_sensor_read(0, &val);
+  ASSERT_NEQ(ret, 0, "agg-sensor should fail if kv_get fails with no default expression");
+  ASSERT_CALL_COUNT(kv_get, 1, 1, "kv_get called exactly once");
+  ASSERT_CALL_COUNT(sensor_cache_read, 0, 0, "sensor_cache_read never called");
+  MOCK_END(kv_get);
+  MOCK_END(sensor_cache_read);
+
+  int mocked_kv_get1(char *key, char *value, size_t *len, unsigned int flags)
+  {
+    ASSERT_EQ(flags, 0, "Flags are for non-persistent kv");
+    if (!strcmp(key, "my_key")) {
+      strcpy(value, "bad_val");
+      if (len) *len = strlen(value);
+      return 0;
     }
-    ret = test_sensor(file, i, sensor_name);
-    if (ret) {
-      printf("TEst for sensor %zu failed with %d\n", i, ret);
-    }
+    return -1;
   }
-  return 0;
+  MOCK(kv_get, mocked_kv_get1);
+  MOCK_RETURN(sensor_cache_read, 0);
+  ret = aggregate_sensor_read(0, &val);
+  ASSERT_NEQ(ret, 0, "Agg-sensor should fail if kv_get returns an unknown value");
+  ASSERT_CALL_COUNT(kv_get, 1, 1, "kv_Get called exactly once");
+  ASSERT_CALL_COUNT(sensor_cache_read, 0, 0, "sensor read never called");
+  MOCK_END(kv_get);
+  MOCK_END(sensor_cache_read);
+
+  int mocked_kv_get2(char *key, char *value, size_t *len, unsigned int flags)
+  {
+    ASSERT_EQ(flags, 0, "Flags are for non-persistent kv");
+    if (!strcmp(key, "my_key")) {
+      strcpy(value, "V1");
+      if (len) *len = strlen(value);
+      return 0;
+    }
+    return -1;
+  }
+  int mocked_snr_read1(uint8_t fru, uint8_t snr, float *value)
+  {
+    ASSERT(fru == 1 && snr == 1, "Expected FRU/SNRID");
+    *value = 10.0;
+    return 0;
+  }
+  MOCK(kv_get, mocked_kv_get2);
+  MOCK(sensor_cache_read, mocked_snr_read1);
+  ret = aggregate_sensor_read(0, &val);
+  ASSERT_EQ(ret, 0, "agg-read passes");
+  ASSERT_CALL_COUNT(kv_get, 1, 1, "kv_get called once");
+  ASSERT_CALL_COUNT(sensor_cache_read, 1, 2, "sensor cache read called at least once");
+  // v1 => exp1 = (10*10) - 4 = 100-4 = 96
+  ASSERT_EQ_FLT(val, 96.0, "Correct value returned");
+  MOCK_END(kv_get);
+  MOCK_END(sensor_cache_read);
+
+  MOCK_RETURN(kv_get, -1);
+  MOCK(sensor_cache_read, mocked_snr_read1);
+  ret = aggregate_sensor_read(1, &val);
+  ASSERT_EQ(ret, 0, "agg-read success");
+  ASSERT_CALL_COUNT(kv_get, 1, 1, "kv get called once");
+  ASSERT_CALL_COUNT(sensor_cache_read, 1, 2, "sensor_cache_read called at least once");
+  ASSERT_EQ_FLT(val, 103.0, "Correct value returned");
+  MOCK_END(kv_get);
+  MOCK_END(sensor_cache_read);
+
+  // kv_get succeeds, but returns an unknown value.
+  int mocked_kv_get3(char *key, char *value, size_t *len, unsigned int flags)
+  {
+    ASSERT_EQ(flags, KV_FPERSIST, "Flags are for persistent kv");
+    if (!strcmp(key, "my_key")) {
+      strcpy(value, "bad_val");
+      if (len)
+        *len = strlen(value);
+      return 0;
+    }
+    return -1;
+  }
+  MOCK(kv_get, mocked_kv_get3);
+  MOCK(sensor_cache_read, mocked_snr_read1);
+  ret = aggregate_sensor_read(1, &val);
+  ASSERT_EQ(ret, 0, "agg-read success");
+  ASSERT_CALL_COUNT(kv_get, 1, 1, "kv get called once");
+  ASSERT_CALL_COUNT(sensor_cache_read, 1, 2, "sensor_cache_read called at least once");
+  ASSERT_EQ_FLT(val, 103.0, "Correct value returned");
+  MOCK_END(kv_get);
+  MOCK_END(sensor_cache_read);
+
+  int mocked_kv_get4(char *key, char *value, size_t *len, unsigned int flags)
+  {
+    ASSERT_EQ(flags, KV_FPERSIST, "Flags are for persistent kv");
+    if (!strcmp(key, "my_key")) {
+      strcpy(value, "V1");
+      if (len)
+        *len = strlen(value);
+      return 0;
+    }
+    return -1;
+  }
+  MOCK(kv_get, mocked_kv_get4);
+  MOCK(sensor_cache_read, mocked_snr_read1);
+  ret = aggregate_sensor_read(1, &val);
+  ASSERT_EQ(ret, 0, "agg-read success");
+  ASSERT_CALL_COUNT(kv_get, 1, 1, "kv get called once");
+  ASSERT_CALL_COUNT(sensor_cache_read, 1, 2, "sensor_cache_read called at least once");
+  ASSERT_EQ_FLT(val, 96.0, "Correct value returned");
+  MOCK_END(kv_get);
+  MOCK_END(sensor_cache_read);
+}
+
+DEFINE_TEST(test_lexp_source_exp)
+{
+  float val;
+  int ret;
+
+  init_sensors("./test_lexp_sexp.json", 1);
+
+  int mocked_read1(uint8_t fru, uint8_t snr, float *value) {
+    ASSERT((fru == 1 && snr == 1) || (fru == 2 && snr == 2), "Expected FRU/SNRID");
+    *value = snr == 1 ? 3.0 : 5.0;
+    return 0;
+  }
+  MOCK(sensor_cache_read, mocked_read1);
+  ret = aggregate_sensor_read(0, &val);
+  ASSERT_EQ(ret, 0, "agg-read success");
+  ASSERT_CALL_COUNT(sensor_cache_read, 2, 2, "Expected sensor reads");
+  ASSERT_EQ_FLT(val, 37.0, "Correct value read");
+  /* 10.0 * ((3 + 5) / 2) - 3.0 = 10 *8/2 - 3 = 10*4-3 = 37 */
+  MOCK_END(sensor_cache_read);
+
+  int mocked_read2(uint8_t fru, uint8_t snr, float *value) {
+    ASSERT((fru == 1 && snr == 1) || (fru == 2 && snr == 2), "Expected FRU/SNRID");
+    if (snr == 2) {
+      *value = 5.0;
+      return 0;
+    }
+    return -1;
+  }
+  MOCK(sensor_cache_read, mocked_read2);
+  ret = aggregate_sensor_read(0, &val);
+  ASSERT_NEQ(ret, 0, "agg-read should fail");
+  ASSERT_CALL_COUNT(sensor_cache_read, 1, 2, "cache read called at least once");
 }
 
 int main(int argc, char *argv[])
 {
-  if (argc < 2) {
-    printf("Usage: %s <JSON Config>\n", argv[0]);
-    return -1;
-  }
-  return aggregate_sensor_test(argv[1]);
+  chdir(dirname(argv[0]));
+
+  CALL_TEST(test_bad_source_exp);
+  CALL_TEST(test_null);
+  CALL_TEST(test_lexp);
+  CALL_TEST(test_cond_lexp);
+  CALL_TEST(test_lexp_source_exp);
+  return 0;
 }

@@ -1,6 +1,6 @@
 # Copyright 2018-present Facebook. All Rights Reserved.
 
-inherit aspeed_uboot_image
+inherit kernel_fitimage
 
 require recipes-core/images/fb-openbmc-image.bb
 
@@ -32,8 +32,9 @@ IMAGE_INSTALL += " \
   spatula \
   stress  \
   usb-console \
-  watchdog-ctrl \
   wedge-eeprom \
+  weutil-dhcp-id \
+  watchdogd \
   "
 
 IMAGE_FEATURES += " \

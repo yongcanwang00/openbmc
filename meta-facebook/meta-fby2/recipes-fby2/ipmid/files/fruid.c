@@ -30,111 +30,38 @@
 #include <errno.h>
 #include <syslog.h>
 #include <string.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <linux/netlink.h>
+#include <arpa/inet.h>
 #include "fruid.h"
 #include <facebook/fby2_common.h>
 #include <facebook/fby2_fruid.h>
 #include <openbmc/pal.h>
+#include <openbmc/ncsi.h>
 
 #define EEPROM_DC       "/sys/class/i2c-adapter/i2c-%d/%d-0051/eeprom"
+
+#if defined(CONFIG_FBY3_POC)
+#define EEPROM_SPB      "/sys/class/i2c-adapter/i2c-10/10-0051/eeprom"
+#else
 #define EEPROM_SPB      "/sys/class/i2c-adapter/i2c-8/8-0051/eeprom"
-#define EEPROM_NIC      "/sys/class/i2c-adapter/i2c-12/12-0051/eeprom"
+#endif
 
 #define BIN_SPB         "/tmp/fruid_spb.bin"
 #define BIN_NIC         "/tmp/fruid_nic.bin"
 #define BIN_SLOT        "/tmp/fruid_slot%d.bin"
+#define BIN_DEV         "/tmp/fruid_slot%d_dev%d.bin"
+
+#define FRU_ID_SERVER 0
+#define FRU_ID_SPB 1
+#define FRU_ID_NIC 2
+#define FRU_ID_PAIR_DEV 3
 
 #define FRUID_SIZE        256
 
-#define SLOT_FILE       "/tmp/slot.bin"
-
-// Helper Functions
-static int
-read_device(const char *device, int *value) {
-  FILE *fp;
-  int rc;
-
-  fp = fopen(device, "r");
-  if (!fp) {
-    int err = errno;
-#ifdef DEBUG
-    syslog(LOG_INFO, "failed to open device %s", device);
-#endif
-    return err;
-  }
-
-  rc = fscanf(fp, "%d", value);
-  fclose(fp);
-  if (rc != 1) {
-#ifdef DEBUG
-    syslog(LOG_INFO, "failed to read device %s", device);
-#endif
-    return ENOENT;
-  } else {
-    return 0;
-  }
-}
-
-/*
- * Get SLOT type
- * PAL_TYPE[7:6] = 0(TwinLake), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
- * PAL_TYPE[5:4] = 0(TwinLake), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
- * PAL_TYPE[3:2] = 0(TwinLake), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
- * PAL_TYPE[1:0] = 0(TwinLake), 1(Crace Flat), 2(Glacier Point), 3(Empty Slot)
- */
-int
-plat_get_slot_type(uint8_t fru) {
-  int type;
-
-  if (read_device(SLOT_FILE, &type)) {
-    printf("Get slot type failed\n");
-    return -1;
-  }
-
-  switch(fru)
-  {
-    case 1:
-      type = (type & (0x3 << 0)) >> 0;
-    break;
-    case 2:
-      type = (type & (0x3 << 2)) >> 2;
-    break;
-    case 3:
-      type = (type & (0x3 << 4)) >> 4;
-    break;
-    case 4:
-      type = (type & (0x3 << 6)) >> 6;
-    break;
-  }
-
-  return type;
-}
-
-static int
-plat_get_ipmb_bus_id(uint8_t slot_id) {
-  int bus_id;
-
-  switch(slot_id) {
-  case FRU_SLOT1:
-    bus_id = IPMB_BUS_SLOT1;
-    break;
-  case FRU_SLOT2:
-    bus_id = IPMB_BUS_SLOT2;
-    break;
-  case FRU_SLOT3:
-    bus_id = IPMB_BUS_SLOT3;
-    break;
-  case FRU_SLOT4:
-    bus_id = IPMB_BUS_SLOT4;
-    break;
-  default:
-    bus_id = -1;
-    break;
-  }
-
-  return bus_id;
-}
 
 /*
  * copy_eeprom_to_bin - copy the eeprom to binary file im /tmp directory
@@ -145,7 +72,7 @@ plat_get_ipmb_bus_id(uint8_t slot_id) {
  * returns 0 on successful copy
  * returns non-zero on file operation errors
  */
-int copy_eeprom_to_bin(const char * eeprom_file, const char * bin_file) {
+static int copy_eeprom_to_bin(const char * eeprom_file, const char * bin_file) {
 
   int eeprom;
   int bin;
@@ -191,6 +118,97 @@ int copy_eeprom_to_bin(const char * eeprom_file, const char * bin_file) {
   return 0;
 }
 
+static int get_ncsi_vid(void) {
+  int sock_fd, ret = 0;
+  int req_msg_size = offsetof(NCSI_NL_MSG_T, msg_payload);
+  int msg_size = sizeof(NCSI_NL_RSP_T);
+  struct sockaddr_nl src_addr, dest_addr;
+  struct nlmsghdr *nlh = NULL;
+  struct iovec iov;
+  struct msghdr msg;
+  NCSI_NL_MSG_T *nl_msg;
+  NCSI_NL_RSP_T *rcv_buf;
+  NCSI_Response_Packet *resp;
+
+  /* open NETLINK socket to send message to kernel */
+  sock_fd = socket(PF_NETLINK, SOCK_RAW, NETLINK_USER);
+  if (sock_fd < 0)  {
+    syslog(LOG_ERR, "get_ncsi_vid: failed to allocate socket");
+    return -1;
+  }
+
+  memset(&src_addr, 0, sizeof(src_addr));
+  src_addr.nl_family = AF_NETLINK;
+  src_addr.nl_pid = getpid();
+  if (bind(sock_fd, (struct sockaddr *)&src_addr, sizeof(src_addr)) == -1)
+  {
+    syslog(LOG_ERR, "get_ncsi_vid: failed to bind socket, errno=0x%x", errno);
+    ret = -1;
+    goto close_and_exit;
+  }
+
+  memset(&dest_addr, 0, sizeof(dest_addr));
+  dest_addr.nl_family = AF_NETLINK;
+  dest_addr.nl_pid = 0; /* For Linux Kernel */
+  dest_addr.nl_groups = 0; /* unicast */
+
+  nlh = (struct nlmsghdr *)malloc(NLMSG_SPACE(msg_size));
+  if (!nlh) {
+    syslog(LOG_ERR, "get_ncsi_vid: failed to allocate message buffer");
+    ret = -1;
+    goto close_and_exit;
+  }
+  memset(nlh, 0, NLMSG_SPACE(msg_size));
+  nlh->nlmsg_len = NLMSG_SPACE(req_msg_size);
+  nlh->nlmsg_pid = getpid();
+  nlh->nlmsg_flags = 0;
+
+  nl_msg = (NCSI_NL_MSG_T *)NLMSG_DATA(nlh);
+  sprintf(nl_msg->dev_name, "eth0");
+  nl_msg->channel_id = 0;
+  nl_msg->cmd = NCSI_GET_VERSION_ID;
+  nl_msg->payload_length = 0;
+
+  iov.iov_base = (void *)nlh;
+  iov.iov_len = nlh->nlmsg_len;
+
+  memset(&msg, 0, sizeof(msg));
+  msg.msg_name = (void *)&dest_addr;
+  msg.msg_namelen = sizeof(dest_addr);
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+
+  ret = sendmsg(sock_fd, &msg, 0);
+  if (ret < 0) {
+    syslog(LOG_ERR, "get_ncsi_vid: failed to send msg, errno=%d", errno);
+    goto close_and_exit;
+  }
+
+  /* Read message from kernel */
+  iov.iov_len = NLMSG_SPACE(msg_size);
+  ret = recvmsg(sock_fd, &msg, 0);
+  if (ret < 0) {
+    syslog(LOG_ERR, "get_ncsi_vid: failed to receive msg, errno=%d", errno);
+    goto close_and_exit;
+  }
+  rcv_buf = (NCSI_NL_RSP_T *)NLMSG_DATA(nlh);
+  resp = (NCSI_Response_Packet *)rcv_buf->msg_payload;
+  if (ntohs(resp->Response_Code) == RESP_COMMAND_COMPLETED) {
+    if (access("/tmp/cache_store", F_OK) == -1) {
+      mkdir("/tmp/cache_store", 0777);
+    }
+    handle_get_version_id(resp);
+  }
+
+close_and_exit:
+  if (nlh) {
+    free(nlh);
+  }
+  close(sock_fd);
+
+  return ret;
+}
+
 int plat_fruid_init(void) {
 
   int ret = -1;
@@ -205,9 +223,10 @@ int plat_fruid_init(void) {
       case FRU_SLOT2:
       case FRU_SLOT3:
       case FRU_SLOT4:
-        switch(plat_get_slot_type(fru))
+        switch(fby2_get_slot_type(fru))
         {
            case SLOT_TYPE_SERVER:
+           case SLOT_TYPE_GPV2:
              // Do not access EEPROM
              break;
            case SLOT_TYPE_CF:
@@ -225,11 +244,8 @@ int plat_fruid_init(void) {
         ret = copy_eeprom_to_bin(EEPROM_SPB, BIN_SPB);
         break;
       case FRU_NIC:
-        if (fby2_get_nic_mfgid() == MFG_BROADCOM) {
-          ret = pal_read_nic_fruid(BIN_NIC, 256);
-          break;
-        }
-        ret = copy_eeprom_to_bin(EEPROM_NIC, BIN_NIC);
+        get_ncsi_vid();
+        ret = pal_read_nic_fruid(BIN_NIC, 256);
         break;
       default:
         break;
@@ -256,13 +272,54 @@ int plat_fruid_size(unsigned char payload_id) {
   return buf.st_size;
 }
 
-int plat_fruid_data(unsigned char payload_id, int offset, int count, unsigned char *data) {
+int plat_fruid_data(unsigned char payload_id, int fru_id, int offset, int count, unsigned char *data) {
   char fpath[64] = {0};
   int fd;
   int ret;
 
-  // Fill the file path for a given slot
-  sprintf(fpath, BIN_SLOT, payload_id);
+  if (fru_id == FRU_ID_SERVER) {
+    // Fill the file path for a given slot
+    sprintf(fpath, BIN_SLOT, payload_id);
+  } else if (fru_id == FRU_ID_SPB) {
+    // Fill the file path for spb
+    sprintf(fpath, BIN_SPB);
+  } else if (fru_id == FRU_ID_NIC) {
+    // Fill the file path for nic
+    sprintf(fpath, BIN_NIC);
+  } else {
+    unsigned char pair_payload_id;
+
+    // Check pair slot
+    if (0 == payload_id%2)
+      pair_payload_id = payload_id - 1;
+    else
+      pair_payload_id = payload_id + 1;
+
+    switch(pal_get_pair_slot_type(payload_id)) {
+      case TYPE_CF_A_SV:
+      case TYPE_GP_A_SV:
+        if (fru_id == FRU_ID_PAIR_DEV) {
+          // Fill the file path for a given slot
+          sprintf(fpath, BIN_SLOT, pair_payload_id);
+        } else {
+          return -1;
+        }
+        break;
+      case TYPE_GPV2_A_SV:
+        if (fru_id == FRU_ID_PAIR_DEV) {
+          // Fill the file path for a given slot
+          sprintf(fpath, BIN_SLOT, pair_payload_id);
+        } else if (fru_id > FRU_ID_PAIR_DEV && fru_id < 16) {
+          // Fill the file path for a given device
+          sprintf(fpath, BIN_DEV, pair_payload_id, (fru_id-3) );
+        } else {
+          return -1;
+        }
+        break;
+      default:
+        return -1;
+    }
+  }
 
   // open file for read purpose
   fd = open(fpath, O_RDONLY);

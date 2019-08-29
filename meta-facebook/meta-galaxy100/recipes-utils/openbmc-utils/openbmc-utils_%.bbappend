@@ -18,7 +18,6 @@ SRC_URI += "file://board-utils.sh \
       file://us_monitor.sh \
       file://us_refresh.sh \
       file://us_console.sh \
-      file://disable_watchdog.sh \
       file://bios_flash.sh \
       file://bcm5389.sh \
       file://at93cx6_util.sh \
@@ -32,8 +31,6 @@ SRC_URI += "file://board-utils.sh \
       file://version_dump \
       file://cpldupgrade \
       file://repeater_verify.sh \
-      file://galaxy100_cp2112_i2c_flush.sh \
-      file://galaxy100_cp2112_toggle_reset.sh \
       file://setup_i2c.sh \
       file://scm_cpld_rev.sh \
       file://ec_version.sh \
@@ -63,8 +60,6 @@ do_install_board() {
     install -m 0755 version_dump ${D}${bindir}/version_dump
     install -m 0755 qsfp_cpld_ver.sh ${D}${localbindir}/qsfp_cpld_ver.sh
     install -m 0755 ceutil.py ${D}${localbindir}/ceutil
-    install -m 0755 galaxy100_cp2112_i2c_flush.sh ${D}${localbindir}/galaxy100_cp2112_i2c_flush.sh
-    install -m 0755 galaxy100_cp2112_toggle_reset.sh ${D}${localbindir}/galaxy100_cp2112_toggle_reset.sh
     install -m 0755 scm_cpld_rev.sh ${D}${localbindir}/scm_cpld_rev.sh
     install -m 0755 ec_version.sh ${D}${localbindir}/ec_version.sh
 
@@ -106,9 +101,6 @@ do_install_board() {
 
     install -m 0755 ${WORKDIR}/rc.local ${D}${sysconfdir}/init.d/rc.local
     update-rc.d -r ${D} rc.local start 99 2 3 4 5 .
-
-    install -m 0755 ${WORKDIR}/disable_watchdog.sh ${D}${sysconfdir}/init.d/disable_watchdog.sh
-    update-rc.d -r ${D} disable_watchdog.sh start 99 2 3 4 5 .
 
     install -m 755 sensors_config_fix.sh ${D}${sysconfdir}/init.d/sensors_config_fix.sh
     update-rc.d -r ${D} sensors_config_fix.sh start 100 2 3 4 5 .

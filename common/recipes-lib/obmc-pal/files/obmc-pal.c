@@ -15,6 +15,8 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
+#define _XOPEN_SOURCE
+#define _GNU_SOURCE
 #include "obmc-pal.h"
 #include <stdio.h>
 #include <stdint.h>
@@ -28,18 +30,21 @@
 #include <sys/wait.h>
 #include <openbmc/kv.h>
 #include <openbmc/ipmi.h>
-#include "obmc-pal.h"
+#include <openbmc/ipmb.h>
 
 #define GPIO_VAL "/sys/class/gpio/gpio%d/value"
-#define SETMASK(y)          (1 << y)
+
+#define _STRINGIFY(bw) #bw
+#define STRINGIFY(bw) _STRINGIFY(bw)
+#define MACHINE STRINGIFY(__MACHINE__)
+
+// PAL Variable
+size_t pal_pwm_cnt __attribute__((weak)) = 0;
+size_t pal_tach_cnt __attribute__((weak)) = 0;
+char pal_pwm_list[] __attribute__((weak)) = "";
+char pal_tach_list[] __attribute__((weak)) = "";
 
 // PAL functions
-int __attribute__((weak))
-pal_init_sensor_check(uint8_t fru, uint8_t snr_num, void *snr)
-{
-  return PAL_EOK;
-}
-
 int __attribute__((weak))
 pal_is_bmc_por(void)
 {
@@ -63,6 +68,12 @@ pal_get_chassis_status(uint8_t slot, uint8_t *req_data, uint8_t *res_data, uint8
 {
   *res_len = 0;
   return;
+}
+
+int __attribute__((weak))
+pal_chassis_control(uint8_t slot, uint8_t *req_data, uint8_t req_len)
+{
+  return PAL_ENOTSUP;
 }
 
 void __attribute__((weak))
@@ -170,6 +181,51 @@ pal_get_board_id(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_
 }
 
 int __attribute__((weak))
+pal_parse_oem_unified_sel(uint8_t fru, uint8_t *sel, char *error_log)
+{
+  uint8_t general_info = (uint8_t) sel[3];
+  uint8_t error_type = general_info & 0x0f;
+  uint8_t plat;
+  uint8_t dimm_failure_event = (uint8_t) sel[12];
+  char dimm_fail_event[][64] = {"Memory training failure", "Memory correctable error", "Memory uncorrectable error", "Reserved"};
+  error_log[0] = '\0';
+
+  switch (error_type) {
+    case UNIFIED_PCIE_ERR:
+      plat = (general_info & 0x10) >> 4;
+      if (plat == 0) {  //x86
+        sprintf(error_log, "GeneralInfo: x86/PCIeErr(0x%02X), Bus %02X/Dev %02X/Fun %02X, \
+                            TotalErrID1Cnt: 0x%04X, ErrID2: 0x%02X, ErrID1: 0x%02X",
+                general_info, sel[11], sel[10] >> 3, sel[10] & 0x7, ((sel[13]<<8)|sel[12]), sel[14], sel[15]);
+      } else {
+        sprintf(error_log, "GeneralInfo: ARM/PCIeErr(0x%02X), Aux. Info: 0x%04X, Bus %02X/Dev %02X/Fun %02X, \
+                            TotalErrID1Cnt: 0x%04X, ErrID2: 0x%02X, ErrID1: 0x%02X",
+                general_info, ((sel[9]<<8)|sel[8]),sel[11], sel[10] >> 3, sel[10] & 0x7, ((sel[13]<<8)|sel[12]), sel[14], sel[15]);
+      }
+      break;
+    case UNIFIED_MEM_ERR:
+      plat = (dimm_failure_event & 0x80) >> 7;
+      if (plat == 0) { //Intel
+        sprintf(error_log, "GeneralInfo: MemErr(0x%02X), DIMM Slot Location: Sled %02X/Socket %02X, Channel %02X, Slot %02X, \
+                          DIMM Failure Event: %s, Major Code: 0x%02X, Minor Code: 0x%02X",
+              general_info, ((sel[8]>>4) & 0x03), sel[8] & 0x0f, sel[9] & 0x0f, sel[10] & 0x0f, dimm_fail_event[sel[12]&0x03], sel[13], sel[14]);
+      } else { //AMD
+        uint16_t minor_code = sel[15] << 8 | sel[14];
+        sprintf(error_log, "GeneralInfo: MemErr(0x%02X), DIMM Slot Location: Sled %02X/Socket %02X, Channel %02X, Slot %02X, \
+                          DIMM Failure Event: %s, Major Code: 0x%02X, Minor Code: 0x%04X",
+              general_info, ((sel[8]>>4) & 0x03), sel[8] & 0x0f, sel[9] & 0x0f, sel[10] & 0x0f, dimm_fail_event[sel[12]&0x03], sel[13], minor_code);
+      }
+      break;
+    default:
+      sprintf(error_log, "Undefined Error Type(0x%02X), Raw: %02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",
+              error_type, sel[3], sel[4], sel[5], sel[6], sel[7], sel[8], sel[9], sel[10], sel[11], sel[12], sel[13], sel[14], sel[15]);
+      break;
+  }
+
+  return 0;
+}
+
+int __attribute__((weak))
 pal_parse_oem_sel(uint8_t fru, uint8_t *sel, char *error_log)
 {
   error_log[0] = '\0';
@@ -219,6 +275,12 @@ pal_set_imc_version(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *r
 }
 
 uint8_t __attribute__((weak))
+pal_add_cper_log(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len)
+{
+  return PAL_EOK;
+}
+
+uint8_t __attribute__((weak))
 pal_add_imc_log(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len)
 {
   return PAL_EOK;
@@ -245,12 +307,21 @@ pal_set_cpu_mem_threshold(const char* threshold_path)
 int __attribute__((weak))
 pal_get_platform_name(char *name)
 {
+  strcpy(name, MACHINE);
   return PAL_EOK;
 }
 
 int __attribute__((weak))
 pal_get_num_slots(uint8_t *num)
 {
+  *num = 0;
+  return PAL_EOK;
+}
+
+int __attribute__((weak))
+pal_get_num_devs(uint8_t slot, uint8_t *num)
+{
+  *num = 0;
   return PAL_EOK;
 }
 
@@ -268,6 +339,18 @@ pal_get_server_power(uint8_t slot_id, uint8_t *status)
 
 int __attribute__((weak))
 pal_set_server_power(uint8_t slot_id, uint8_t cmd)
+{
+  return PAL_EOK;
+}
+
+int __attribute__((weak))
+pal_get_device_power(uint8_t slot_id, uint8_t dev_id, uint8_t *status, uint8_t *type)
+{
+  return PAL_EOK;
+}
+
+int __attribute__((weak))
+pal_set_device_power(uint8_t slot_id, uint8_t dev_id, uint8_t cmd)
 {
   return PAL_EOK;
 }
@@ -305,13 +388,30 @@ pal_set_hb_led(uint8_t status)
 int __attribute__((weak))
 pal_get_fru_list(char *list)
 {
+  *list = '\0';
   return PAL_EOK;
 }
 
 int __attribute__((weak))
 pal_get_fru_id(char *str, uint8_t *fru)
 {
-  return PAL_EOK;
+  unsigned int _fru;
+  if (sscanf(str, "fru%u", &_fru) == 1) {
+    *fru = (uint8_t)_fru;
+    return PAL_EOK;
+  }
+  return PAL_ENOTSUP;
+}
+
+int __attribute__((weak))
+pal_get_dev_id(char *str, uint8_t *fru)
+{
+  unsigned int _fru;
+  if (sscanf(str, "fru%u", &_fru) == 1) {
+    *fru = (uint8_t)_fru;
+    return PAL_EOK;
+  }
+  return PAL_ENOTSUP;
 }
 
 int __attribute__((weak))
@@ -322,41 +422,37 @@ pal_get_fru_name(uint8_t fru, char *name)
 }
 
 int __attribute__((weak))
+pal_get_dev_name(uint8_t fru, uint8_t dev, char *name)
+{
+  int ret = pal_get_fruid_name(fru, name);
+  if (ret < 0)
+    return ret;
+  sprintf(name, "%s Device %u", name ,dev);
+  return PAL_EOK;
+}
+
+int __attribute__((weak))
 pal_get_fruid_path(uint8_t fru, char *path)
 {
-  return PAL_EOK;
+  return PAL_ENOTSUP;
+}
+
+int __attribute__((weak))
+pal_get_dev_fruid_path(uint8_t fru, uint8_t dev_id, char *path)
+{
+  return PAL_ENOTSUP;
 }
 
 int __attribute__((weak))
 pal_get_fruid_eeprom_path(uint8_t fru, char *path)
 {
-  return PAL_EOK;
+  return PAL_ENOTSUP;
 }
 
 int __attribute__((weak))
 pal_get_fruid_name(uint8_t fru, char *name)
 {
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_get_fru_sensor_list(uint8_t fru, uint8_t **sensor_list, int *cnt)
-{
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_get_sensor_poll_interval(uint8_t fru, uint8_t sensor_num, uint8_t *value)
-{
-  *value = 2;
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_get_fru_discrete_list(uint8_t fru, uint8_t **sensor_list, int *cnt)
-{
-  *cnt = 0;
-  return PAL_EOK;
+  return PAL_ENOTSUP;
 }
 
 int __attribute__((weak))
@@ -366,48 +462,14 @@ pal_fruid_write(uint8_t slot, char *path)
 }
 
 int __attribute__((weak))
+pal_dev_fruid_write(uint8_t fru, uint8_t dev_id, char *path)
+{
+  return PAL_EOK;
+}
+
+
+int __attribute__((weak))
 pal_get_fru_devtty(uint8_t fru, char *devtty)
-{
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_sensor_check(uint8_t fru, uint8_t sensor_num)
-{
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_sensor_read_raw(uint8_t fru, uint8_t sensor_num, void *value)
-{
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_sensor_threshold_flag(uint8_t fru, uint8_t snr_num, uint16_t *flag)
-{
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_alter_sensor_thresh_flag(uint8_t fru, uint8_t snr_num, uint16_t *flag) {
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_get_sensor_name(uint8_t fru, uint8_t sensor_num, char *name)
-{
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_get_sensor_units(uint8_t fru, uint8_t sensor_num, char *units)
-{
-  return PAL_EOK;
-}
-
-int __attribute__((weak))
-pal_get_sensor_threshold(uint8_t fru, uint8_t sensor_num, uint8_t thresh, void *value)
 {
   return PAL_EOK;
 }
@@ -476,13 +538,6 @@ pal_set_sysfw_ver(uint8_t slot, uint8_t *ver)
   return PAL_EOK;
 }
 
-int __attribute__((weak))
-pal_sensor_discrete_check(uint8_t fru, uint8_t snr_num, char *snr_name,
-    uint8_t o_val, uint8_t n_val)
-{
-  return PAL_EOK;
-}
-
 /*
  *  Default implementation if pal_is_fru_x86 is to always return true
  *  on all FRU, on all platform. This is because all uServers so far are X86.
@@ -524,6 +579,15 @@ pal_get_x86_event_sensor_name(uint8_t fru, uint8_t snr_num,
         break;
       case IIO_ERR:
         sprintf(name, "IIO_ERR");
+        break;
+      case SMN_ERR:
+        sprintf(name, "SMN_ERR");
+        break;
+      case USB_ERR:
+        sprintf(name, "USB_ERR");
+        break;
+      case PSB_ERR:
+        sprintf(name, "PSB_ERR");
         break;
       case MEMORY_ECC_ERR:
         sprintf(name, "MEMORY_ECC_ERR");
@@ -617,7 +681,7 @@ pal_sel_handler(uint8_t fru, uint8_t snr_num, uint8_t *event_data)
  * A Function to parse common SEL message, a helper funciton
  * for pal_parse_sel.
  *
- * Note that this fuction __CANNOT__ be overriden.
+ * Note that this function __CANNOT__ be overriden.
  * To add board specific routine, please override pal_parse_sel.
  */
 
@@ -721,7 +785,7 @@ pal_parse_sel_helper(uint8_t fru, uint8_t *sel, char *error_log)
       else
         strcat(error_log, "Unknown");
 
-      sprintf(temp_log,  "CRITICAL_IRQ, %s", error_log);
+      sprintf(temp_log,  "CRITICAL_IRQ, %s,FRU:%u", error_log, fru);
       pal_add_cri_sel(temp_log);
 
       break;
@@ -746,6 +810,14 @@ pal_parse_sel_helper(uint8_t fru, uint8_t *sel, char *error_log)
             sprintf(temp_log, ", BMC Failed (Self Test Fail)");
             strcat(error_log, temp_log);
             break;
+          case 0xA10A:
+            sprintf(temp_log, ", System Firmware Corruption Detected");
+            strcat(error_log, temp_log);
+            break;
+          case 0xA10B:
+            sprintf(temp_log, ", TPM Self-Test FAIL Detected");
+            strcat(error_log, temp_log);
+            break;
           default:
             break;
         }
@@ -755,15 +827,15 @@ pal_parse_sel_helper(uint8_t fru, uint8_t *sel, char *error_log)
     case MACHINE_CHK_ERR:
       if ((ed[0] & 0x0F) == 0x0B) {
         strcat(error_log, "Uncorrectable");
-        sprintf(temp_log, "MACHINE_CHK_ERR, %s bank Number %d", error_log, ed[1]);
+        sprintf(temp_log, "MACHINE_CHK_ERR, %s bank Number %d,FRU:%u", error_log, ed[1], fru);
         pal_add_cri_sel(temp_log);
       } else if ((ed[0] & 0x0F) == 0x0C) {
         strcat(error_log, "Correctable");
-        sprintf(temp_log, "MACHINE_CHK_ERR, %s bank Number %d", error_log, ed[1]);
+        sprintf(temp_log, "MACHINE_CHK_ERR, %s bank Number %d,FRU:%u", error_log, ed[1], fru);
         pal_add_cri_sel(temp_log);
       } else {
         strcat(error_log, "Unknown");
-        sprintf(temp_log, "MACHINE_CHK_ERR, %s bank Number %d", error_log, ed[1]);
+        sprintf(temp_log, "MACHINE_CHK_ERR, %s bank Number %d,FRU:%u", error_log, ed[1], fru);
         pal_add_cri_sel(temp_log);
       }
 
@@ -798,7 +870,7 @@ pal_parse_sel_helper(uint8_t fru, uint8_t *sel, char *error_log)
         strcat(error_log, "Unknown");
       }
 
-      sprintf(temp_log, "PCI_ERR %s", error_log);
+      sprintf(temp_log, "PCI_ERR %s,FRU:%u", error_log, fru);
       pal_add_cri_sel(temp_log);
 
       break;
@@ -835,7 +907,7 @@ pal_parse_sel_helper(uint8_t fru, uint8_t *sel, char *error_log)
           strcat(error_log, " - Reserved");
       } else
         strcat(error_log, "Unknown");
-      sprintf(temp_log, "IIO_ERR %s", error_log);
+      sprintf(temp_log, "IIO_ERR %s,FRU:%u", error_log, fru);
       pal_add_cri_sel(temp_log);
       break;
 
@@ -846,13 +918,13 @@ pal_parse_sel_helper(uint8_t fru, uint8_t *sel, char *error_log)
         if ((ed[0] & 0x0F) == 0x0) {
           if (sen_type == 0x0C) {
             strcat(error_log, "Correctable");
-            sprintf(temp_log, "DIMM%02X ECC err", ed[2]);
+            sprintf(temp_log, "DIMM%02X ECC err,FRU:%u", ed[2], fru);
             pal_add_cri_sel(temp_log);
           } else if (sen_type == 0x10)
             strcat(error_log, "Correctable ECC error Logging Disabled");
         } else if ((ed[0] & 0x0F) == 0x1) {
           strcat(error_log, "Uncorrectable");
-          sprintf(temp_log, "DIMM%02X UECC err", ed[2]);
+          sprintf(temp_log, "DIMM%02X UECC err,FRU:%u", ed[2], fru);
           pal_add_cri_sel(temp_log);
         } else if ((ed[0] & 0x0F) == 0x5)
           strcat(error_log, "Correctable ECC error Logging Limit Reached");
@@ -963,7 +1035,7 @@ pal_parse_sel_helper(uint8_t fru, uint8_t *sel, char *error_log)
         strcat(error_log, "SOC MEMHOT");
       else
         strcat(error_log, "Unknown");
-      sprintf(temp_log, "CPU_DIMM_HOT %s", error_log);
+      sprintf(temp_log, "CPU_DIMM_HOT %s,FRU:%u", error_log, fru);
       pal_add_cri_sel(temp_log);
       break;
 
@@ -1276,6 +1348,12 @@ pal_is_slot_server(uint8_t fru)
 }
 
 int __attribute__((weak))
+pal_is_slot_support_update(uint8_t fru)
+{
+  return pal_is_slot_server(fru);
+}
+
+int __attribute__((weak))
 pal_self_tray_location(uint8_t *value)
 {
   return PAL_EOK;
@@ -1304,18 +1382,6 @@ pal_is_test_board(void)
 {
   //Non Test Board:0
   return 0;
-}
-
-void __attribute__((weak))
-pal_sensor_assert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh)
-{
-  return;
-}
-
-void __attribute__((weak))
-pal_sensor_deassert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh)
-{
-  return;
 }
 
 int __attribute__((weak))
@@ -1386,10 +1452,11 @@ pal_is_crashdump_ongoing_system(void)
 {
   //Base on fru number to check if autodump is onging.
   uint8_t max_slot_num = 0;
+  int i;
 
   pal_get_num_slots(&max_slot_num);
 
-  for(int i = 1; i <= max_slot_num; i++) //fru start from 1
+  for(i = 1; i <= max_slot_num; i++) //fru start from 1
   {
     int fruid = pal_slotid_to_fruid(i);
     if ( 1 == pal_is_crashdump_ongoing(fruid) )
@@ -1543,16 +1610,39 @@ bool __attribute__((weak))
 pal_is_fw_update_ongoing_system(void) {
   //Base on fru number to sum up if fw update is onging.
   uint8_t max_slot_num = 0;
+  int i;
 
   pal_get_num_slots(&max_slot_num);
 
-  for(int i = 0; i <= max_slot_num; i++) { // 0 is reserved for BMC update
+  for(i = 0; i <= max_slot_num; i++) { // 0 is reserved for BMC update
     int fruid = pal_slotid_to_fruid(i);
     if (pal_is_fw_update_ongoing(fruid) == true) //if any slot is true, then we can return true
       return true;
   }
 
   return false;
+}
+
+bool __attribute__((weak))
+pal_can_change_power(uint8_t fru)
+{
+  char fruname[32];
+  if (pal_get_fru_name(fru, fruname)) {
+    sprintf(fruname, "fru%d", fru);
+  }
+  if (pal_is_fw_update_ongoing(fru)) {
+    printf("FW update for %s is ongoing, block the power controlling.\n", fruname);
+    return false;
+  }
+  if (pal_is_crashdump_ongoing(fru)) {
+    printf("Crashdump for %s is ongoing, block the power controlling.\n", fruname);
+    return false;
+  }
+  if (pal_is_cplddump_ongoing(fru)) {
+    printf("CPLD dump for %s is ongoing, block the power controlling.\n", fruname);
+    return false;
+  }
+  return true;
 }
 
 int __attribute__((weak))
@@ -2145,7 +2235,6 @@ pal_sensor_thresh_modify(uint8_t fru,  uint8_t sensor_num, uint8_t thresh_type, 
   }
 
   ret = pal_get_thresh_from_file(fru, sensor_num, &snr);
-
   if (ret < 0) {
     syslog(LOG_ERR, "%s: Fail to get %s sensor threshold file\n",__func__,fru_name);
     return ret;
@@ -2153,26 +2242,68 @@ pal_sensor_thresh_modify(uint8_t fru,  uint8_t sensor_num, uint8_t thresh_type, 
 
   switch (thresh_type) {
     case UCR_THRESH:
+      if (((snr.flag & GETMASK(UNR_THRESH)) && (value > snr.unr_thresh)) ||
+          ((snr.flag & GETMASK(UNC_THRESH)) && (value < snr.unc_thresh)) ||
+          ((snr.flag & GETMASK(LNC_THRESH)) && (value < snr.lnc_thresh)) ||
+          ((snr.flag & GETMASK(LCR_THRESH)) && (value < snr.lcr_thresh)) ||
+          ((snr.flag & GETMASK(LNR_THRESH)) && (value < snr.lnr_thresh))) {
+        return -1;
+      }
       snr.ucr_thresh = value;
       snr.flag |= SETMASK(UCR_THRESH);
       break;
     case UNC_THRESH:
+      if (((snr.flag & GETMASK(UNR_THRESH)) && (value > snr.unr_thresh)) ||
+          ((snr.flag & GETMASK(UCR_THRESH)) && (value > snr.ucr_thresh)) ||
+          ((snr.flag & GETMASK(LNC_THRESH)) && (value < snr.lnc_thresh)) ||
+          ((snr.flag & GETMASK(LCR_THRESH)) && (value < snr.lcr_thresh)) ||
+          ((snr.flag & GETMASK(LNR_THRESH)) && (value < snr.lnr_thresh))) {
+        return -1;
+      }
       snr.unc_thresh = value;
       snr.flag |= SETMASK(UNC_THRESH);
       break;
     case UNR_THRESH:
+      if (((snr.flag & GETMASK(UCR_THRESH)) && (value < snr.ucr_thresh)) ||
+          ((snr.flag & GETMASK(UNC_THRESH)) && (value < snr.unc_thresh)) ||
+          ((snr.flag & GETMASK(LNC_THRESH)) && (value < snr.lnc_thresh)) ||
+          ((snr.flag & GETMASK(LCR_THRESH)) && (value < snr.lcr_thresh)) ||
+          ((snr.flag & GETMASK(LNR_THRESH)) && (value < snr.lnr_thresh))) {
+        return -1;
+      }
       snr.unr_thresh = value;
       snr.flag |= SETMASK(UNR_THRESH);
       break;
     case LCR_THRESH:
+      if (((snr.flag & GETMASK(LNR_THRESH)) && (value < snr.lnr_thresh)) ||
+          ((snr.flag & GETMASK(LNC_THRESH)) && (value > snr.lnc_thresh)) ||
+          ((snr.flag & GETMASK(UNC_THRESH)) && (value > snr.unc_thresh)) ||
+          ((snr.flag & GETMASK(UCR_THRESH)) && (value > snr.ucr_thresh)) ||
+          ((snr.flag & GETMASK(UNR_THRESH)) && (value > snr.unr_thresh))) {
+        return -1;
+      }
       snr.lcr_thresh = value;
       snr.flag |= SETMASK(LCR_THRESH);
       break;
     case LNC_THRESH:
+      if (((snr.flag & GETMASK(LNR_THRESH)) && (value < snr.lnr_thresh)) ||
+          ((snr.flag & GETMASK(LCR_THRESH)) && (value < snr.lcr_thresh)) ||
+          ((snr.flag & GETMASK(UNC_THRESH)) && (value > snr.unc_thresh)) ||
+          ((snr.flag & GETMASK(UCR_THRESH)) && (value > snr.ucr_thresh)) ||
+          ((snr.flag & GETMASK(UNR_THRESH)) && (value > snr.unr_thresh))) {
+        return -1;
+      }
       snr.lnc_thresh = value;
       snr.flag |= SETMASK(LNC_THRESH);
       break;
     case LNR_THRESH:
+      if (((snr.flag & GETMASK(LCR_THRESH)) && (value > snr.lcr_thresh)) ||
+          ((snr.flag & GETMASK(LNC_THRESH)) && (value > snr.lnc_thresh)) ||
+          ((snr.flag & GETMASK(UNC_THRESH)) && (value > snr.unc_thresh)) ||
+          ((snr.flag & GETMASK(UCR_THRESH)) && (value > snr.ucr_thresh)) ||
+          ((snr.flag & GETMASK(UNR_THRESH)) && (value > snr.unr_thresh))) {
+        return -1;
+      }
       snr.lnr_thresh = value;
       snr.flag |= SETMASK(LNR_THRESH);
       break;
@@ -2204,5 +2335,108 @@ pal_get_me_name(uint8_t fru, char *target_name) {
 
 int __attribute__((weak))
 pal_ignore_thresh(uint8_t fru, uint8_t snr_num, uint8_t thresh){
+  return 0;
+}
+
+int __attribute__((weak))
+pal_set_tpm_physical_presence(uint8_t slot, uint8_t presence) {
+  return PAL_ENOTSUP;
+}
+
+int __attribute__((weak))
+pal_get_tpm_physical_presence(uint8_t slot) {
+  return PAL_ENOTSUP;
+}
+
+int __attribute__((weak))
+pal_create_TPMTimer(int fru) {
+  return PAL_ENOTSUP;
+}
+
+int __attribute__((weak))
+pal_force_update_bic_fw(uint8_t slot_id, uint8_t comp, char *path) {
+  return -2;  //means not support
+}
+
+void __attribute__((weak))
+pal_specific_plat_fan_check(bool status)
+{
+  return;
+}
+
+int __attribute__((weak))
+pal_get_sensor_util_timeout(uint8_t fru) {
+  return 4;
+}
+
+bool __attribute__((weak))
+pal_get_pair_fru(uint8_t slot_id, uint8_t *pair_fru)
+{
+  return false;
+}
+
+char * __attribute__((weak))
+pal_get_pwn_list(void)
+{
+  return pal_pwm_list;
+}
+
+char * __attribute__((weak))
+pal_get_tach_list(void)
+{
+  return pal_tach_list;
+}
+
+int __attribute__((weak))
+pal_get_pwm_cnt(void)
+{
+  return pal_pwm_cnt;
+}
+
+int __attribute__((weak))
+pal_get_tach_cnt(void)
+{
+  return pal_tach_cnt;
+}
+
+int __attribute__((weak))
+pal_set_time_sync(uint8_t *req_data, uint8_t req_len)
+{
+  return PAL_ENOTSUP;
+}
+
+int __attribute__((weak))
+pal_get_nic_fru_id(void)
+{
+  return -1;
+}
+
+int __attribute__((weak))
+pal_get_bmc_ipmb_slave_addr(uint16_t *slave_addr, uint8_t bus_id)
+{
+  *slave_addr = BMC_SLAVE_ADDR;
+  return 0;
+}
+
+int __attribute__((weak))
+pal_is_mcu_ready(uint8_t bus)
+{
+  return PAL_ENOTSUP;
+}
+
+int __attribute__((weak))
+pal_wait_mcu_ready2update(uint8_t bus)
+{
+  sleep(2);
+  return 0;
+}
+
+int __attribute__((weak))
+pal_set_sdr_update_flag(uint8_t slot, uint8_t update) {
+  return 0;
+}
+
+int __attribute__((weak))
+pal_get_sdr_update_flag(uint8_t slot) {
   return 0;
 }

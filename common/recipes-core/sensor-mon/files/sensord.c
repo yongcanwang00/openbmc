@@ -201,14 +201,14 @@ check_thresh_deassert(uint8_t fru, uint8_t snr_num, uint8_t thresh,
       case UNR_THRESH:
       case UCR_THRESH:
       case UNC_THRESH:
-        if (*curr_val >= (thresh_val - snr[snr_num].neg_hyst))
+        if (FORMAT_CONV(*curr_val) >= FORMAT_CONV((thresh_val - snr[snr_num].neg_hyst)))
           return 0;
         break;
 
       case LNR_THRESH:
       case LCR_THRESH:
       case LNC_THRESH:
-        if (*curr_val <= (thresh_val + snr[snr_num].pos_hyst))
+        if (FORMAT_CONV(*curr_val) <= FORMAT_CONV((thresh_val + snr[snr_num].pos_hyst)))
           return 0;
     }
 
@@ -307,14 +307,14 @@ check_thresh_assert(uint8_t fru, uint8_t snr_num, uint8_t thresh,
       case UNR_THRESH:
       case UCR_THRESH:
       case UNC_THRESH:
-        if (*curr_val < thresh_val) {
+        if (FORMAT_CONV(*curr_val) < FORMAT_CONV(thresh_val)) {
           return 0;
         }
         break;
       case LNR_THRESH:
       case LCR_THRESH:
       case LNC_THRESH:
-        if (*curr_val > thresh_val) {
+        if (FORMAT_CONV(*curr_val) > FORMAT_CONV(thresh_val)) {
           return 0;
         }
         break;
@@ -448,7 +448,7 @@ snr_monitor(void *arg) {
   float curr_val;
   uint8_t *sensor_list, *discrete_list;
   thresh_sensor_t *snr;
-  uint8_t snr_poll_interval[MAX_SENSOR_NUM] = {0};
+  uint32_t snr_poll_interval[MAX_SENSOR_NUM] = {0};
 
   ret = pal_get_fru_sensor_list(fru, &sensor_list, &sensor_cnt);
   if (ret < 0) {
@@ -482,6 +482,17 @@ snr_monitor(void *arg) {
     if (pal_is_fw_update_ongoing(fru)) {
       sleep(STOP_PERIOD);
       continue;
+    }
+
+    if (pal_get_sdr_update_flag(fru)) {
+      if (init_fru_snr_thresh(fru) < 0) {
+        syslog(LOG_DEBUG, "%s : slot%u SDR update fail", __func__, fru);
+        sleep(STOP_PERIOD);
+        continue;
+      } else {
+        syslog(LOG_DEBUG, "%s : slot%u SDR update successfully", __func__, fru);
+        pal_set_sdr_update_flag(fru,0);
+      }
     }
 
     ret = thresh_reinit_chk(fru);
@@ -575,7 +586,7 @@ snr_health_monitor() {
       ret = pal_get_fru_health(fru, &fru_health_kv_state[fru]);
       if (ret) {
         // If the FRU is not ready, do not log error about errors in its health reporting
-        if (ret != ERR_NOT_READY)
+        if (ret != ERR_SENSOR_NA)
           syslog(LOG_ERR, " %s - kv get health status failed, fru %d",__func__, fru);
         continue;
       }
@@ -672,7 +683,7 @@ run_sensord(int argc, char **argv) {
 
   int ret, arg;
   uint8_t fru;
-  uint8_t fru_flag = 0;
+  int fru_flag = 0;
   pthread_t thread_snr[MAX_NUM_FRUS];
   pthread_t sensor_health;
   pthread_t agg_sensor_mon;

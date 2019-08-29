@@ -19,24 +19,23 @@
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
 
+source /usr/local/bin/gpio-utils.sh
+
 if [ $# -ne 2 ]; then
     exit -1
 fi
 
-declare -A fcb_gpio_map
-fcb_gpio_map[fcb1]=456
-fcb_gpio_map[fcb2]=464
-fcb_gpio_map[fcb3]=472
-fcb_gpio_map[fcb4]=480
-
-card="${1,,}"
-img="$2"
-
-base=${fcb_gpio_map[$card]}
-
-if [ -z "$base" ]; then
+# Convert card string to upper case
+card="${1^^}"
+if [ ${card} != "FCB1" && ${card} != "FCB2" && \
+     ${card} != "FCB3" && ${card} != "FCB4" ]; then
     echo "${1} is not a correct FCB card name."
     exit -1
 fi
+img="$2"
 
-ispvm dll /usr/lib/libcpldupdate_dll_gpio.so "${img}" --tms ${base} --tck $((base+1)) --tdi $((base+2)) --tdo $((base+3))
+ispvm dll /usr/lib/libcpldupdate_dll_gpio.so "${img}" \
+    --tms ${card}_CPLD_TMS \
+    --tck ${card}_CPLD_TCK \
+    --tdi ${card}_CPLD_TDI \
+    --tdo ${card}_CPLD_TDO

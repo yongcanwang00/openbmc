@@ -33,27 +33,27 @@ pca_addr=20
 create_pim_gpio() {
   local base lc
   lc=$1
-  base=$2
+  chip=$2
 
   if [ -e LC${lc}_STATUS_GREEN_L ]; then
       # already created GPIOs for such pim
       return
   fi
 
-  gpio_export $((base + 1)) LC${lc}_DPM_POWER_UP
-  gpio_export $((base + 4)) LC${lc}_SCD_RESET_L
-  gpio_export $((base + 5)) LC${lc}_SCD_CONFIG_L
-  gpio_export $((base + 6)) LC${lc}_SATELLITE_PROG
-  gpio_export $((base + 7)) LC${lc}_LC_PWR_CYC
-  gpio_export $((base + 8)) LC${lc}_BAB_SYS_RESET_L
-  gpio_export $((base + 8 + 5)) LC${lc}_FAST_JTAG_EN
-  gpio_export $((base + 8 + 6)) LC${lc}_STATUS_RED_L
-  gpio_export $((base + 8 + 7)) LC${lc}_STATUS_GREEN_L
-  logger pim_enable: registered PIM${lc} with GPIO base $base
+  gpio_export_by_offset ${chip} 1 LC${lc}_DPM_POWER_UP
+  gpio_export_by_offset ${chip} 4 LC${lc}_SCD_RESET_L
+  gpio_export_by_offset ${chip} 5 LC${lc}_SCD_CONFIG_L
+  gpio_export_by_offset ${chip} 6 LC${lc}_SATELLITE_PROG
+  gpio_export_by_offset ${chip} 7 LC${lc}_LC_PWR_CYC
+  gpio_export_by_offset ${chip} 8 LC${lc}_BAB_SYS_RESET_L
+  gpio_export_by_offset ${chip} $((8 + 5)) LC${lc}_FAST_JTAG_EN
+  gpio_export_by_offset ${chip} $((8 + 6)) LC${lc}_STATUS_RED_L
+  gpio_export_by_offset ${chip} $((8 + 7)) LC${lc}_STATUS_GREEN_L
+  logger pim_enable: registered PIM${lc} with GPIO chip ${chip}
 }
 
 power_on_pim() {
-  local lc old
+  local lc old ver
   lc=$1
   old=$(gpio_get LC${lc}_DPM_POWER_UP keepdirection)
   if [ $old -eq 1 ]; then
@@ -63,11 +63,33 @@ power_on_pim() {
   gpio_set LC${lc}_DPM_POWER_UP 1 # all power on
   sleep 1
   gpio_set LC${lc}_SCD_RESET_L 1     # scd out of reset
+  gpio_set LC${lc}_SCD_CONFIG_L 1    # scd not in config
   gpio_set LC${lc}_BAB_SYS_RESET_L 1 # gearbox out of reset
-  gpio_set LC${lc}_SATELLITE_PROG 0 # required for v4 image on P1
+  # If linecard FPGA version is before v6, need to set SATELLITE_PROG to 0.
+  # Otherwise, need to set it to 1.
+  # However, the reading of the linecard FPGA version is not reliable,
+  # we will set SATELLITE_PROG to 1 at all time, assuming the linecard FPGA
+  # is upgraded to the latest.
+  gpio_set LC${lc}_SATELLITE_PROG 1
   gpio_set LC${lc}_STATUS_RED_L 1 # turn off red
   gpio_set LC${lc}_STATUS_GREEN_L 0 # turn on green
   logger pim_enbale: powered on PIM${lc}
+}
+
+#clear pimserial endpoint cache if pim doesn't exist but the pimserial file does.
+clear_pimserial_cache(){
+  for i in "${pim_list[@]}"
+  do
+    pimserial_number="${1}"
+    pimserial_path="$SCDCPLD_SYSFS_DIR/lc${pimserial_number}_prsnt_sta"
+    pimserial_present="$(cat ${pimserial_path} 2> /dev/null | head -n 1)"
+    pimserial_cache_path=/tmp/pim${pimserial_number}_serial.txt
+    
+    if [ "${pimserial_present}" == 0x0 ] && [ -f "${pimserial_cache_path}" ]; then
+      #pim device doesn't exist but pimserial cache txt file exist, so remove it.
+      rm -rf "${pimserial_cache_path}"
+    fi
+  done
 }
 
 while true; do
@@ -101,12 +123,8 @@ while true; do
          fi
          # Check if device was probed and driver was installed
          if [ -e $drv_path/gpio ]; then
-            base=`cat $drv_path/gpio/gpiochip*/base 2>/dev/null`
-            # Base should be at least bigger than 100, do quick check
-            if [ $base -gt 100 ]; then
-               create_pim_gpio $((i+1)) $base
-               pim_found[$i]=1
-            fi
+           create_pim_gpio $((i+1)) ${pim_addr}
+           pim_found[$i]=1
          fi
       fi
     fi
@@ -117,7 +135,13 @@ while true; do
     if [ "${pim_found[$i]}" -eq "1" ]; then
        power_on_pim $((i + 1))
     fi
+    
+    #clear pimserial endpoint cache
+    clear_pimserial_cache $((i+1))
+
+
   done
-  # Sleep 10 seconds until the next loop
-  sleep 10
+  # Sleep 5 seconds until the next loop.
+  # reduce to 5 seconds for faster scan.
+  sleep 5
 done

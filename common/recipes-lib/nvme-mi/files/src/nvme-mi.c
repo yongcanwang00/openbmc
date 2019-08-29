@@ -27,32 +27,6 @@
 #include <errno.h>
 #include "nvme-mi.h"
 
-#define I2C_NVME_INTF_ADDR 0x6A
-
-#define NVME_SFLGS_REG 0x01
-#define NVME_WARNING_REG 0x02
-#define NVME_TEMP_REG 0x03
-#define NVME_PDLU_REG 0x04
-#define NVME_VENDOR_REG 0x09
-#define NVME_SERIAL_NUM_REG 0x0B
-#define SERIAL_NUM_SIZE 20
-
-/* NVMe-MI Temperature Definition Code */
-#define TEMP_HIGHER_THAN_127 0x7F
-#define TEPM_LOWER_THAN_n60 0xC4
-#define TEMP_NO_UPDATE 0x80
-#define TEMP_SENSOR_FAIL 0x81
-
-/* NVMe-MI Vendor ID Code */
-#define VENDOR_ID_HGST 0x1C58
-#define VENDOR_ID_HYNIX 0x1C5C
-#define VENDOR_ID_INTEL 0x8086
-#define VENDOR_ID_LITEON 0x14A4
-#define VENDOR_ID_MICRON 0x1344
-#define VENDOR_ID_SAMSUNG 0x144D
-#define VENDOR_ID_SEAGATE 0x1BB1
-#define VENDOR_ID_TOSHIBA 0x1179
-
 // Helper function for msleep
 void
 msleep(int msec) {
@@ -255,59 +229,362 @@ nvme_serial_num_read(const char *i2c_bus_device, uint8_t *value, int size) {
   return 0;
 }
 
-/* Read NVMe-MI Status Flags and decode it. */
 int
-nvme_sflgs_read_decode(const char *i2c_bus_device, uint8_t *value, t_status_flags *status_flag_decoding) {
-  
-  if ((i2c_bus_device == NULL) | (value == NULL) | (status_flag_decoding == NULL)) {
+nvme_sflgs_decode(uint8_t value, t_status_flags *status_flag_decoding) {
+
+  if (!status_flag_decoding) {
     syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
     return -1;
   }
 
   sprintf(status_flag_decoding->self.key, "Status Flags");
+  sprintf(status_flag_decoding->self.value, "0x%02X", value);
+
+  sprintf(status_flag_decoding->read_complete.key, "SMBUS block read complete");
+  sprintf(status_flag_decoding->read_complete.value, (value & 0x80)?"OK":"No");
+
+  sprintf(status_flag_decoding->ready.key, "Drive Ready");
+  sprintf(status_flag_decoding->ready.value, (value & 0x40)?"Not ready":"Ready");
+
+  sprintf(status_flag_decoding->functional.key, "Drive Functional");
+  sprintf(status_flag_decoding->functional.value, (value & 0x20)?"Functional":"Unrecoverable Failure");
+
+  sprintf(status_flag_decoding->reset_required.key, "Reset Required");
+  sprintf(status_flag_decoding->reset_required.value, (value & 0x10)?"No":"Required");
+
+  sprintf(status_flag_decoding->port0_link.key, "Port 0 PCIe Link Active");
+  sprintf(status_flag_decoding->port0_link.value, (value & 0x08)?"Up":"Down");
+
+  sprintf(status_flag_decoding->port1_link.key, "Port 1 PCIe Link Active");
+  sprintf(status_flag_decoding->port1_link.value, (value & 0x04)?"Up":"Down");
+
+  return 0;
+}
+
+int
+nvme_smart_warning_decode(uint8_t value, t_smart_warning *smart_warning_decoding) {
+
+  if (!smart_warning_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(smart_warning_decoding->self.key, "SMART Critical Warning");
+  sprintf(smart_warning_decoding->self.value, "0x%02X", value);
+
+  sprintf(smart_warning_decoding->spare_space.key, "Spare Space");
+  sprintf(smart_warning_decoding->spare_space.value, (value & 0x01)?"Normal":"Low");
+
+  sprintf(smart_warning_decoding->temp_warning.key, "Temperature Warning");
+  sprintf(smart_warning_decoding->temp_warning.value, (value & 0x02)?"Normal":"Abnormal");
+
+  sprintf(smart_warning_decoding->reliability.key, "NVM Subsystem Reliability");
+  sprintf(smart_warning_decoding->reliability.value, (value & 0x04)?"Normal":"Degraded");
+
+  sprintf(smart_warning_decoding->media_status.key, "Media Status");
+  sprintf(smart_warning_decoding->media_status.value, (value & 0x08)?"Normal":"Read Only mode");
+
+  sprintf(smart_warning_decoding->backup_device.key, "Volatile Memory Backup Device");
+  sprintf(smart_warning_decoding->backup_device.value, (value & 0x10)?"Normal":"Failed");
+
+  return 0;
+}
+
+int
+nvme_temp_decode(uint8_t value, t_key_value_pair *temp_decoding) {
+
+  if (!temp_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(temp_decoding->key, "Composite Temperature");
+  if (value <= TEMP_HIGHER_THAN_127)
+    sprintf(temp_decoding->value, "%d C", value);
+  else if (value >= TEPM_LOWER_THAN_n60)
+    sprintf(temp_decoding->value, "%d C", -(0x100 - value));
+  else if (value == TEMP_NO_UPDATE)
+    sprintf(temp_decoding->value, "No data or data is too old");
+  else if (value == TEMP_SENSOR_FAIL)
+    sprintf(temp_decoding->value, "Sensor failure");
+
+  return 0;
+}
+
+int
+nvme_lower_threshold_temp_decode(uint8_t value, t_key_value_pair *temp_decoding) {
+
+  if (nvme_temp_decode(value,temp_decoding) < 0) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+  sprintf(temp_decoding->key, "Lower Thermal Threshold");
+
+  return 0;
+}
+
+int
+nvme_upper_threshold_temp_decode(uint8_t value, t_key_value_pair *temp_decoding) {
+
+  if (nvme_temp_decode(value,temp_decoding) < 0) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+  sprintf(temp_decoding->key, "Upper Thermal Threshold");
+
+  return 0;
+}
+
+int
+nvme_max_asic_temp_decode(uint8_t value, t_key_value_pair *temp_decoding) {
+
+  if (nvme_temp_decode(value,temp_decoding) < 0) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+  sprintf(temp_decoding->key, "Historical Max ASIC Temperature");
+
+  return 0;
+}
+
+int
+nvme_pdlu_decode(uint8_t value, t_key_value_pair *pdlu_decoding) {
+
+  if (!pdlu_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(pdlu_decoding->key, "Percentage Drive Life Used");
+  sprintf(pdlu_decoding->value, "%d", value);
+
+  return 0;
+}
+
+int
+nvme_vendor_decode(uint16_t value, t_key_value_pair *vendor_decoding) {
+
+  if (!vendor_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(vendor_decoding->key, "Vendor");
+  switch (value) {
+    case VENDOR_ID_HGST:
+      sprintf(vendor_decoding->value, "HGST(0x%04X)", value);
+      break;
+    case VENDOR_ID_HYNIX:
+      sprintf(vendor_decoding->value, "Hynix(0x%04X)", value);
+      break;
+    case VENDOR_ID_INTEL:
+      sprintf(vendor_decoding->value, "Intel(0x%04X)", value);
+      break;
+    case VENDOR_ID_LITEON:
+      sprintf(vendor_decoding->value, "Lite-on(0x%04X)", value);
+      break;
+    case VENDOR_ID_MICRON:
+      sprintf(vendor_decoding->value, "Micron(0x%04X)", value);
+      break;
+    case VENDOR_ID_SAMSUNG:
+      sprintf(vendor_decoding->value, "Samsung(0x%04X)", value);
+      break;
+    case VENDOR_ID_SEAGATE:
+      sprintf(vendor_decoding->value, "Seagate(0x%04X)", value);
+      break;
+    case VENDOR_ID_TOSHIBA:
+      sprintf(vendor_decoding->value, "Toshiba(0x%04X)", value);
+      break;
+    case VENDOR_ID_FACEBOOK:
+      sprintf(vendor_decoding->value, "Facebook(0x%04X)", value);
+      break;
+    case VENDOR_ID_BROARDCOM:
+      sprintf(vendor_decoding->value, "Broadcom(0x%04X)", value);
+      break;
+    default:
+      sprintf(vendor_decoding->value, "Unknown(0x%04X)", value);
+      break;
+  }
+
+  return 0;
+}
+
+int
+nvme_serial_num_decode(uint8_t *value, t_key_value_pair *sn_decoding) {
+
+  if (!value || !sn_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(sn_decoding->key, "Serial Number");
+  memcpy(sn_decoding->value, value, SERIAL_NUM_SIZE);
+  sn_decoding->value[SERIAL_NUM_SIZE] = '\0';
+
+  return 0;
+}
+
+int
+nvme_part_num_decode(uint8_t *value, t_key_value_pair *pn_decoding) {
+
+  if (!value || !pn_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(pn_decoding->key, "Module Product Part Number");
+  if (value[0] == 0xFF) { // RosePeak does not have Module Product Part Number
+    sprintf(pn_decoding->value, "NA");
+  } else {
+    memcpy(pn_decoding->value, value, PART_NUM_SIZE);
+    pn_decoding->value[PART_NUM_SIZE] = '\0';
+  }
+
+  return 0;
+}
+
+int
+nvme_meff_decode (uint8_t value, t_key_value_pair *meff_decoding) {
+
+  if (!value || !meff_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(meff_decoding->key, "Management End Point Form Factor");
+  switch (value) {
+    case MEFF_M_2_22110:
+      sprintf(meff_decoding->value, "M.2 22110 (0x%02X)", value);
+      break;
+    case MEFF_Dual_M_2:
+      sprintf(meff_decoding->value, "Dual M.2 (0x%02X)", value);
+      break;
+    default:
+      sprintf(meff_decoding->value, "Unknown (0x%02X)", value);
+      break;
+  }
+
+  return 0;
+}
+
+int
+nvme_ffi_0_decode (uint8_t value, t_key_value_pair *ffi_0_decoding) {
+
+  if (!ffi_0_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(ffi_0_decoding->key, "Form Factor Information 0 Register");
+  switch (value) {
+    case FFI_0_STORAGE:
+      sprintf(ffi_0_decoding->value, "Storage (0x%02X)", value);
+      break;
+    case FFI_0_ACCELERATOR:
+      sprintf(ffi_0_decoding->value, "Accelerator (0x%02X)", value);
+      break;
+    default:
+      sprintf(ffi_0_decoding->value, "Unknown (0x%02X)", value);
+      break;
+  }
+
+  return 0;
+}
+
+int
+nvme_power_state_decode (uint8_t value, t_key_value_pair *power_state_decoding) {
+
+  if (!power_state_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(power_state_decoding->key, "Power State");
+  switch (value) {
+    case POWER_STATE_FULL_MODE:
+      sprintf(power_state_decoding->value, "Full Power Mode (0x%02X)", value);
+      break;
+    case POWER_STATE_REDUCED_MODE:
+      sprintf(power_state_decoding->value, "Reduced Power Mode (0x%02X)", value);
+      break;
+    case POWER_STATE_LOWER_MODE:
+      sprintf(power_state_decoding->value, "Lower Power Mode (0x%02X)", value);
+      break;
+    default:
+      sprintf(power_state_decoding->value, "Unknown (0x%02X)", value);
+      break;
+  }
+
+  return 0;
+}
+
+int
+nvme_i2c_freq_decode (uint8_t value, t_key_value_pair *i2c_freq_decoding) {
+
+  if (!i2c_freq_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(i2c_freq_decoding->key, "SMBus/I2C Frquency");
+  switch (value) {
+    case I2C_FREQ_100K:
+      sprintf(i2c_freq_decoding->value, "100 kHz");
+      break;
+    case I2C_FREQ_400K:
+      sprintf(i2c_freq_decoding->value, "400 kHz");
+      break;
+    case I2C_FREQ_1M:
+      sprintf(i2c_freq_decoding->value, "1 MHz");
+      break;
+    default:
+      sprintf(i2c_freq_decoding->value, "Unknown(0x%02X)", value);
+      break;
+  }
+
+  return 0;
+}
+
+int
+nvme_tdp_level_decode (uint8_t value, t_key_value_pair *tdp_level_decoding) {
+
+  if (!tdp_level_decoding) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
+  sprintf(tdp_level_decoding->key, "Module Static TDP level setting");
+  switch (value) {
+    case TDP_LEVEL1:
+    case TDP_LEVEL2:
+    case TDP_LEVEL3:
+      sprintf(tdp_level_decoding->value, "level %d", value);
+      break;
+    default:
+      sprintf(tdp_level_decoding->value, "Unknown (0x%02X)", value);
+      break;
+  }
+
+  return 0;
+}
+
+/* Read NVMe-MI Status Flags and decode it. */
+int
+nvme_sflgs_read_decode(const char *i2c_bus_device, uint8_t *value, t_status_flags *status_flag_decoding) {
+
+  if ((i2c_bus_device == NULL) | (value == NULL) | (status_flag_decoding == NULL)) {
+    syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
+    return -1;
+  }
+
   if (nvme_sflgs_read(i2c_bus_device, value)) {
     syslog(LOG_DEBUG, "%s(): nvme_sflgs_read failed", __func__);
+    sprintf(status_flag_decoding->self.key, "Status Flags");
     sprintf(status_flag_decoding->self.value, "Fail on reading");
     return -1;
   }
   else {
-    sprintf(status_flag_decoding->self.value, "0x%02X", *value);
-
-    sprintf(status_flag_decoding->read_complete.key, "SMBUS block read complete");
-    if ((*value & 0x80) == 0)
-      sprintf(status_flag_decoding->read_complete.value, "FAIL");
-    else
-      sprintf(status_flag_decoding->read_complete.value, "OK");
-
-    sprintf(status_flag_decoding->ready.key, "Drive Ready");
-    if ((*value & 0x40) == 0)
-      sprintf(status_flag_decoding->ready.value, "Ready");
-    else
-      sprintf(status_flag_decoding->ready.value, "Not ready");
-
-    sprintf(status_flag_decoding->functional.key, "Drive Functional");
-    if ((*value & 0x20) == 0)
-      sprintf(status_flag_decoding->functional.value, "Unrecoverable Failure");
-    else
-      sprintf(status_flag_decoding->functional.value, "Functional");
-
-    sprintf(status_flag_decoding->reset_required.key, "Reset Required");
-    if ((*value & 0x10) == 0)
-      sprintf(status_flag_decoding->reset_required.value, "Required");
-    else
-      sprintf(status_flag_decoding->reset_required.value, "No");
-
-    sprintf(status_flag_decoding->port0_link.key, "Port 0 PCIe Link Active");
-    if ((*value & 0x08) == 0)
-      sprintf(status_flag_decoding->port0_link.value, "Down");
-    else
-      sprintf(status_flag_decoding->port0_link.value, "Up");
-
-    sprintf(status_flag_decoding->port1_link.key, "Port 1 PCIe Link Active");
-    if ((*value & 0x04) == 0)
-      sprintf(status_flag_decoding->port1_link.value, "Down");
-    else
-      sprintf(status_flag_decoding->port1_link.value, "Up");
+    nvme_sflgs_decode(*value, status_flag_decoding);
   }
 
   return 0;
@@ -315,51 +592,21 @@ nvme_sflgs_read_decode(const char *i2c_bus_device, uint8_t *value, t_status_flag
 
 /* Read NVMe-MI SMART Warnings and decode it. */
 int
-nvme_smart_warning_read_decode(const char *i2c_bus_device, uint8_t *value, t_smart_warning *smart_warning_decoding) { 
+nvme_smart_warning_read_decode(const char *i2c_bus_device, uint8_t *value, t_smart_warning *smart_warning_decoding) {
 
   if ((i2c_bus_device == NULL) | (value == NULL) | (smart_warning_decoding == NULL)) {
     syslog(LOG_ERR, "%s(): invalid parameter (null)", __func__);
     return -1;
   }
 
-  sprintf(smart_warning_decoding->self.key, "SMART Critical Warning");
   if (nvme_smart_warning_read(i2c_bus_device, value)) {
     syslog(LOG_DEBUG, "%s(): nvme_smart_warning_read failed", __func__);
+    sprintf(smart_warning_decoding->self.key, "SMART Critical Warning");
     sprintf(smart_warning_decoding->self.value, "Fail on reading");
     return -1;
   }
   else {
-    sprintf(smart_warning_decoding->self.value, "0x%02X", *value);
-
-    sprintf(smart_warning_decoding->spare_space.key, "Spare Space");
-    if ((*value & 0x01) == 0)
-      sprintf(smart_warning_decoding->spare_space.value, "Low");
-    else
-      sprintf(smart_warning_decoding->spare_space.value, "Normal");
-
-    sprintf(smart_warning_decoding->temp_warning.key, "Temperature Warning");
-    if ((*value & 0x02) == 0)
-      sprintf(smart_warning_decoding->temp_warning.value, "Abnormal");
-    else
-      sprintf(smart_warning_decoding->temp_warning.value, "Normal");
-
-    sprintf(smart_warning_decoding->reliability.key, "NVM Subsystem Reliability");
-    if ((*value & 0x04) == 0)
-      sprintf(smart_warning_decoding->reliability.value, "Degraded");
-    else
-      sprintf(smart_warning_decoding->reliability.value, "Normal");
-
-    sprintf(smart_warning_decoding->media_status.key, "Media Status");
-    if ((*value & 0x08) == 0)
-      sprintf(smart_warning_decoding->media_status.value, "Read Only mode");
-    else
-      sprintf(smart_warning_decoding->media_status.value, "Normal");
-
-    sprintf(smart_warning_decoding->backup_device.key, "Volatile Memory Backup Device");
-    if ((*value & 0x10) == 0)
-      sprintf(smart_warning_decoding->backup_device.value, "Failed");
-    else
-      sprintf(smart_warning_decoding->backup_device.value, "Normal");
+    nvme_smart_warning_decode(*value, smart_warning_decoding);
   }
 
   return 0;
@@ -374,21 +621,14 @@ nvme_temp_read_decode(const char *i2c_bus_device, uint8_t *value, t_key_value_pa
     return -1;
   }
 
-  sprintf(temp_decoding->key, "Composite Temperature");
   if (nvme_temp_read(i2c_bus_device, value)) {
     syslog(LOG_DEBUG, "%s(): nvme_temp_read failed", __func__);
+    sprintf(temp_decoding->key, "Composite Temperature");
     sprintf(temp_decoding->value, "Fail on reading");
     return -1;
   }
   else {
-    if (*value <= TEMP_HIGHER_THAN_127)
-      sprintf(temp_decoding->value, "%d C", *value);
-    else if (*value >= TEPM_LOWER_THAN_n60)
-      sprintf(temp_decoding->value, "%d C", (*value - 0x100));
-    else if (*value == TEMP_NO_UPDATE)
-      sprintf(temp_decoding->value, "No data or data is too old");
-    else if (*value == TEMP_SENSOR_FAIL)
-      sprintf(temp_decoding->value, "Sensor failure");
+    nvme_temp_decode(*value, temp_decoding);
   }
 
   return 0;
@@ -403,14 +643,15 @@ nvme_pdlu_read_decode(const char *i2c_bus_device, uint8_t *value, t_key_value_pa
     return -1;
   }
 
-  sprintf(pdlu_decoding->key, "Percentage Drive Life Used");
   if (nvme_pdlu_read(i2c_bus_device, value)) {
     syslog(LOG_DEBUG, "%s(): nvme_pdlu_read failed", __func__);
+    sprintf(pdlu_decoding->key, "Percentage Drive Life Used");
     sprintf(pdlu_decoding->value, "Fail on reading");
     return -1;
   }
-  else
-    sprintf(pdlu_decoding->value, "%d", *value);
+  else {
+    nvme_pdlu_decode(*value, pdlu_decoding);
+  }
 
   return 0;
 }
@@ -424,41 +665,14 @@ nvme_vendor_read_decode(const char *i2c_bus_device, uint16_t *value, t_key_value
     return -1;
   }
 
-  sprintf(vendor_decoding->key, "Vendor");
   if (nvme_vendor_read(i2c_bus_device, value)) {
     syslog(LOG_DEBUG, "%s(): nvme_vendor_read failed", __func__);
+    sprintf(vendor_decoding->key, "Vendor");
     sprintf(vendor_decoding->value, "Fail on reading");
     return -1;
   }
-  else{
-    switch (*value) {
-    case VENDOR_ID_HGST:
-      sprintf(vendor_decoding->value, "HGST(0x%04X)", *value);
-      break;
-    case VENDOR_ID_HYNIX:
-      sprintf(vendor_decoding->value, "Hynix(0x%04X)", *value);
-      break;
-    case VENDOR_ID_INTEL:
-      sprintf(vendor_decoding->value, "Intel(0x%04X)", *value);
-      break;
-    case VENDOR_ID_LITEON:
-      sprintf(vendor_decoding->value, "Lite-on(0x%04X)", *value);
-      break;
-    case VENDOR_ID_MICRON:
-      sprintf(vendor_decoding->value, "Micron(0x%04X)", *value);
-      break;
-    case VENDOR_ID_SAMSUNG:
-      sprintf(vendor_decoding->value, "Samsung(0x%04X)", *value);
-      break;
-    case VENDOR_ID_SEAGATE:
-      sprintf(vendor_decoding->value, "Seagate(0x%04X)", *value);
-      break;
-    case VENDOR_ID_TOSHIBA:
-      sprintf(vendor_decoding->value, "Toshiba(0x%04X)", *value);
-      break;
-    default:
-      sprintf(vendor_decoding->value, "Unknown(0x%04X)", *value);
-    }
+  else {
+    nvme_vendor_decode(*value, vendor_decoding);
   }
 
   return 0;
@@ -473,15 +687,14 @@ nvme_serial_num_read_decode(const char *i2c_bus_device, uint8_t *value, int size
     return -1;
   }
 
-  sprintf(sn_decoding->key, "Serial Number");
   if (nvme_serial_num_read(i2c_bus_device, value, SERIAL_NUM_SIZE)) {
     syslog(LOG_DEBUG, "%s(): nvme_serial_num_read failed", __func__);
+    sprintf(sn_decoding->key, "Serial Number");
     sprintf(sn_decoding->value, "Fail on reading");
     return -1;
   }
-  else{
-    memcpy(sn_decoding->value, value, SERIAL_NUM_SIZE);
-    sn_decoding->value[SERIAL_NUM_SIZE] = '\0';
+  else {
+    nvme_serial_num_decode(value, sn_decoding);
   }
 
   return 0;

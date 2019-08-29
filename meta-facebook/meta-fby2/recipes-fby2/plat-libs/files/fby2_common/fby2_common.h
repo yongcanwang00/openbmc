@@ -44,6 +44,7 @@ enum {
   SLOT_TYPE_CF     = 1,
   SLOT_TYPE_GP     = 2,
   SLOT_TYPE_NULL   = 3,
+  SLOT_TYPE_GPV2   = 4,
 };
 
 enum {
@@ -54,9 +55,32 @@ enum {
 };
 
 enum {
+  BYPASS_BIC     = 0,
+  BYPASS_ME      = 1,
+  BYPASS_IMC     = 2,
+  BYPASS_NCSI    = 3,
+  BYPASS_NETWORK = 4,
+};
+
+enum {
   PCIE_CONFIG_4xTL      = 0x00,
   PCIE_CONFIG_2xCF_2xTL = 0x11,
   PCIE_CONFIG_2xGP_2xTL = 0x22,
+};
+
+enum {
+  TYPE_SPB_YV2     = 0,
+  TYPE_SPB_YV250   = 1,
+};
+
+enum {
+  TYPE_DUAL_R_FAN     = 0,
+  TYPE_SINGLE_FAN   = 1,
+};
+
+enum {
+  TYPE_10K_FAN   = 0,
+  TYPE_15K_FAN   = 1,
 };
 
 enum {
@@ -64,17 +88,26 @@ enum {
   TYPE_CF_A_SV     = 1,
   TYPE_GP_A_SV     = 2,
   TYPE_NULL_A_SV   = 3,
-  TYPE_SV_A_CF     = 4,
-  TYPE_CF_A_CF     = 5,
-  TYPE_GP_A_CF     = 6,
-  TYPE_NULL_A_CF   = 7,
-  TYPE_SV_A_GP     = 8,
-  TYPE_CF_A_GP     = 9,
-  TYPE_GP_A_GP     = 10,
-  TYPE_NULL_A_GP   = 11,
-  TYPE_SV_A_NULL   = 12,
-  TYPE_CF_A_NULL   = 13,
-  TYPE_GP_A_NULL   = 14,
+  TYPE_GPV2_A_SV   = 4,
+  TYPE_SV_A_CF     = 16,
+  TYPE_CF_A_CF     = 17,
+  TYPE_GP_A_CF     = 18,
+  TYPE_NULL_A_CF   = 19,
+  TYPE_GPV2_A_CF   = 20,
+  TYPE_SV_A_GP     = 32,
+  TYPE_CF_A_GP     = 33,
+  TYPE_GP_A_GP     = 34,
+  TYPE_NULL_A_GP   = 35,
+  TYPE_GPV2_A_GP   = 36,
+  TYPE_SV_A_NULL   = 48,
+  TYPE_CF_A_NULL   = 49,
+  TYPE_GP_A_NULL   = 50,
+  TYPE_GPV2_A_NULL = 52,
+  TYPE_SV_A_GPV2   = 64,
+  TYPE_CF_A_GPV2   = 65,
+  TYPE_GP_A_GPV2   = 66,
+  TYPE_NULL_A_GPV2 = 67,
+  TYPE_GPV2_A_GPV2 = 68,
 };
 
 typedef struct {
@@ -117,6 +150,8 @@ typedef struct {
 #define GPIO_POSTCODE_1                    49
 #define GPIO_POSTCODE_2                    50
 #define GPIO_POSTCODE_3                    51
+#define GPIO_DUAL_FAN_DETECT               54
+#define GPIO_YV250_USB_OCP_UART_SWITCH_N   55 // YV2.50
 #define GPIO_FAN_LATCH_DETECT              61
 #define GPIO_SLOT1_POWER_EN                64
 #define GPIO_SLOT2_POWER_EN                65
@@ -126,6 +161,8 @@ typedef struct {
 #define GPIO_CLK_BUFF2_PWR_EN_N            73
 #define GPIO_VGA_SW0                       74
 #define GPIO_VGA_SW1                       75
+#define GPIO_MEZZ_PRSNTA2_N                88
+#define GPIO_MEZZ_PRSNTB2_N                89
 #define GPIO_PWR1_LED                      96
 #define GPIO_PWR2_LED                      97
 #define GPIO_PWR3_LED                      98
@@ -134,6 +171,7 @@ typedef struct {
 #define GPIO_I2C_SLOT2_ALERT_N            107
 #define GPIO_I2C_SLOT3_ALERT_N            108
 #define GPIO_I2C_SLOT4_ALERT_N            109
+#define GPIO_UART_SEL                     115 // YV2
 #define GPIO_P12V_STBY_SLOT1_EN           116
 #define GPIO_P12V_STBY_SLOT2_EN           117
 #define GPIO_P12V_STBY_SLOT3_EN           118
@@ -187,11 +225,15 @@ typedef struct {
 
 int fby2_common_fru_name(uint8_t fru, char *str);
 int fby2_common_fru_id(char *str, uint8_t *fru);
+int fby2_common_dev_id(char *str, uint8_t *dev);
 int fby2_common_crashdump(uint8_t fru, bool ierr, bool platform_reset);
 int fby2_common_set_ierr(uint8_t fru, bool value);
 int fby2_common_get_ierr(uint8_t fru, bool *value);
 int fby2_common_cpld_dump(uint8_t fru);
-
+int fby2_common_sboot_cpld_dump(uint8_t fru);
+int fby2_common_get_spb_type(void);
+int fby2_common_get_fan_type(void);
+int fby2_common_get_fan_config(void);
 #ifdef __cplusplus
 } // extern "C"
 #endif

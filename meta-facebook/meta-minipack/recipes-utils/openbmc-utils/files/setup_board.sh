@@ -32,27 +32,23 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
 
 board_rev=$(wedge_board_rev)
 
-# Light up sys led
-i2cset -f -y 50 0x20 0x06 0x00
-i2cset -f -y 50 0x20 0x07 0x00
-i2cset -f -y 50 0x20 0x03 0xfd
-
 # Enable the isolation buffer between BMC and COMe i2c bus
 echo 1 > ${SCMCPLD_SYSFS_DIR}/i2c_bus_en
-echo 0 > ${SCMCPLD_SYSFS_DIR}/iso_com_en
+echo 0 > ${SCMCPLD_SYSFS_DIR}/iso_com_early_en
 
 # Make the backup BIOS flash connect to COMe instead of BMC
 echo 0 > ${SCMCPLD_SYSFS_DIR}/com_spi_oe_n
 echo 0 > ${SCMCPLD_SYSFS_DIR}/com_spi_sel
 
-# Disable watchdog temporarily because fscd is not ready
-/usr/local/bin/watchdog_ctrl.sh off
+# Setup management port LED
+/usr/local/bin/setup_mgmt.sh led &
 
-# EVTA is 4, EVTB is 0
-if [ $board_rev -ne 4 ]; then
-    # Set BMC_RST_FPGA(GPIOP2) pin to high, IOB FPGA in normal mode
-    gpio_set BMC_RST_FPGA 1
+# Setup TH3 PCI-e repeater
+/usr/local/bin/setup_pcie_repeater.sh th3 write
+
+# Init server_por_cfg
+if [ ! -f "/mnt/data/kv_store/server_por_cfg" ]; then
+    /usr/bin/kv set server_por_cfg on persistent
 fi
 
-# Setup management port LED
-/usr/local/bin/setup_mgmt.sh led
+/usr/bin/kv set smb_board_rev $board_rev

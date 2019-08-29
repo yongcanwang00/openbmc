@@ -36,15 +36,8 @@ extern "C" {
 #define MAX_KEY_LEN     64
 #define MAX_NUM_FAN     2
 
-#define FRU_STATUS_GOOD   1
-#define FRU_STATUS_BAD    0
-
-#define SETBIT(x, y)        (x | (1LL << y))
-#define GETBIT(x, y)        ((x & (1LL << y)) > y)
-#define CLEARBIT(x, y)      (x & (~(1LL << y)))
-#define GETMASK(y)          (1LL << y)
-
 #define MAX_NODES 4
+#define MAX_NUM_DEVS 12
 
 #define MAX_NIC_TEMP_RETRY 3
 
@@ -54,10 +47,12 @@ extern "C" {
 extern char * key_list[];
 extern size_t pal_pwm_cnt;
 extern size_t pal_tach_cnt;
-extern const char pal_pwm_list[];
-extern const char pal_tach_list[];
+extern char pal_pwm_list[];
+extern char pal_tach_list[];
 extern const char pal_fru_list[];
 extern const char pal_server_list[];
+extern const char pal_dev_list[];
+extern const char pal_dev_pwr_option_list[];
 
 enum {
   USB_MUX_OFF,
@@ -65,15 +60,38 @@ enum {
 };
 
 enum {
-  SERVER_POWER_OFF,
-  SERVER_POWER_ON,
-  SERVER_POWER_CYCLE,
-  SERVER_POWER_RESET,
-  SERVER_GRACEFUL_SHUTDOWN,
-  SERVER_12V_OFF,
-  SERVER_12V_ON,
-  SERVER_12V_CYCLE,
-  SERVER_GLOBAL_RESET,
+  DEVICE_POWER_OFF,
+  DEVICE_POWER_ON,
+};
+
+enum {
+  DEV_TYPE_UNKNOWN,
+  DEV_TYPE_SSD,
+  DEV_TYPE_VSI_ACC,
+  DEV_TYPE_BRCM_ACC,
+  DEV_TYPE_OTHER_ACC,
+  DEV_TYPE_DUAL_M2,
+};
+
+enum {
+  FFI_STORAGE,
+  FFI_ACCELERATOR,
+};
+
+enum {
+  MEFF_M2_22110 = 0x35,
+  MEFF_DUAL_M2 = 0xF0,
+};
+
+enum {
+  VENDOR_VSI = 0x5043,
+  VENDOR_BRCM = 0x875E,
+};
+
+enum {
+  DEV_FRU_NOT_COMPLETE,
+  DEV_FRU_COMPLETE,
+  DEV_FRU_IGNORE,
 };
 
 enum {
@@ -92,6 +110,8 @@ enum {
 enum {
   FAN_0 = 0,
   FAN_1,
+  FAN_2,
+  FAN_3,
 };
 
 enum {
@@ -100,20 +120,53 @@ enum {
 };
 
 enum {
+  POST_END_CHECK = 0,
+  NVME_READY_CHECK
+};
+
+enum {
   IMC_DUMP_END = 0,
   IMC_DUMP_START,
   IMC_DUMP_PROCESS,
 };
 
+enum {
+  TRANS_TYPE_VALID = 0,
+  OPER_VALID,
+  LEVEL_VALID,
+  PROC_CONTEXT_CORRUPT_VALID,
+  CORR_VALID,
+  PRECISE_PC_VALID,
+  RESTART_PC_VALID,
+  PARTICIPATION_TYPE_VALID,
+  TIMEOUT_VALID,
+  ADDRESS_SPACE_VALID,
+  MEM_ATTR_VALID,
+  ACCESS_MODE_VALID
+};
+
+enum {
+  CACHE_ERROR = 0,
+  TLB_ERROR,
+  BUS_ERROR,
+  MICRO_ARCH_ERROR
+};
+
 int pal_get_platform_name(char *name);
 int pal_get_num_slots(uint8_t *num);
+int pal_get_num_devs(uint8_t slot, uint8_t *num);
 int pal_is_slot_latch_closed(uint8_t slot_id, uint8_t *status);
 int pal_is_fru_prsnt(uint8_t fru, uint8_t *status);
 int pal_is_fru_ready(uint8_t fru, uint8_t *status);
 int pal_is_slot_server(uint8_t fru);
+int pal_is_slot_support_update(uint8_t fru);
 int pal_get_server_power(uint8_t slot_id, uint8_t *status);
+int pal_get_device_power(uint8_t slot_id, uint8_t dev_id, uint8_t *status, uint8_t *type);
+int pal_get_dev_info(uint8_t slot_id, uint8_t dev_id, uint8_t *nvme_ready, uint8_t *status, uint8_t *type);
 void pal_power_policy_control(uint8_t slot_id, char *last_ps);
 int pal_set_server_power(uint8_t slot_id, uint8_t cmd);
+int pal_set_device_power(uint8_t slot_id, uint8_t dev_id, uint8_t cmd);
+int pal_baseboard_clock_control(uint8_t slot_id, char *ctrl);
 int pal_is_server_12v_on(uint8_t slot_id, uint8_t *status);
 int pal_slot_pair_12V_off(uint8_t slot_id);
 bool pal_is_hsvc_ongoing(uint8_t slot_id);
@@ -122,6 +175,7 @@ int pal_sled_cycle(void);
 int pal_is_debug_card_prsnt(uint8_t *status);
 int pal_get_hand_sw_physically(uint8_t *pos);
 int pal_get_hand_sw(uint8_t *pos);
+int pal_get_usb_sw(uint8_t *pos);
 int pal_enable_usb_mux(uint8_t state);
 int pal_switch_vga_mux(uint8_t slot);
 int pal_switch_usb_mux(uint8_t slot);
@@ -140,8 +194,11 @@ int pal_set_id_led(uint8_t slot, uint8_t status);
 int pal_set_slot_id_led(uint8_t slot, uint8_t status);
 int pal_get_fru_list(char *list);
 int pal_get_fru_id(char *fru_str, uint8_t *fru);
+int pal_get_dev_id(char *dev_str, uint8_t *dev);
 int pal_get_fru_name(uint8_t fru, char *name);
+int pal_get_dev_name(uint8_t fru, uint8_t dev, char *name);
 int pal_get_fruid_path(uint8_t fru, char *path);
+int pal_get_dev_fruid_path(uint8_t fru, uint8_t dev_id, char *path);
 int pal_get_fruid_eeprom_path(uint8_t fru, char *path);
 int pal_get_fruid_name(uint8_t fru, char *name);
 int pal_get_fru_sdr_path(uint8_t fru, char *path);
@@ -170,6 +227,7 @@ int pal_set_sysfw_ver(uint8_t slot, uint8_t *ver);
 int pal_get_sysfw_ver(uint8_t slot, uint8_t *ver);
 int pal_read_nic_fruid(const char *path, int size);
 int pal_fruid_write(uint8_t slot, char *path);
+int pal_dev_fruid_write(uint8_t slot, uint8_t dev_id, char *path);
 int pal_is_bmc_por(void);
 int pal_sensor_discrete_check(uint8_t fru, uint8_t snr_num, char *snr_name, uint8_t o_val, uint8_t n_val);
 int pal_get_event_sensor_name(uint8_t fru, uint8_t *sel, char *name);
@@ -203,6 +261,9 @@ bool pal_is_mcu_working(void);
 int pal_set_fru_post(uint8_t fru, uint8_t value);
 int pal_get_fru_post(uint8_t fru, uint8_t *value);
 uint8_t pal_is_post_ongoing();
+int pal_set_nvme_ready(uint8_t fru, uint8_t value);
+int pal_get_nvme_ready(uint8_t fru, uint8_t *value);
+uint8_t pal_is_nvme_ready();
 int pal_ignore_thresh(uint8_t fru, uint8_t snr_num, uint8_t thresh);
 long pal_get_fscd_counter();
 int pal_set_fscd_counter(long value);
@@ -212,9 +273,24 @@ int pal_set_post_start_timestamp(uint8_t fru, uint8_t method);
 int pal_get_post_start_timestamp(uint8_t fru, long *value);
 int pal_set_post_end_timestamp(uint8_t fru);
 int pal_get_post_end_timestamp(uint8_t fru, long *value);
+int pal_set_nvme_ready_timestamp(uint8_t fru);
+int pal_get_nvme_ready_timestamp(uint8_t fru, long *value);
 uint8_t pal_is_post_time_out();
+uint8_t pal_is_nvme_time_out();
 void pal_check_fscd_watchdog();
 uint8_t pal_get_server_type(uint8_t fru);
+int pal_set_tpm_physical_presence(uint8_t slot, uint8_t presence);
+int pal_get_tpm_physical_presence(uint8_t slot);
+int pal_create_TPMTimer(int fru);
+int pal_set_tpm_timeout(uint8_t slot, int timeout);
+int pal_set_tpm_physical_presence_reset(uint8_t slot, uint8_t reset);
+int pal_get_sensor_util_timeout(uint8_t fru);
+int pal_set_m2_prsnt(uint8_t slot_id, uint8_t dev_id, uint8_t present);
+int pal_is_ocp30_nic(void);
+bool pal_get_pair_fru(uint8_t slot_id, uint8_t *pair_fru);
+bool pal_is_fw_update_ongoing(uint8_t fru);
+int pal_set_sdr_update_flag(uint8_t slot, uint8_t update);
+int pal_get_sdr_update_flag(uint8_t slot);
 #ifdef __cplusplus
 } // extern "C"
 #endif

@@ -26,6 +26,7 @@
 # Default-Stop:
 # Short-Description: Power on micro-server
 ### END INIT INFO
+. /usr/local/fbpackages/utils/ast-functions
 
 # Eventually, this will be used to configure the various (mostly
 # i2c-based) sensors, once we have a kernel version that supports
@@ -96,8 +97,90 @@ config_adc 13    0  1000 0
 config_adc 14    0  1000 0
 config_adc 15    0  1000 0
 
-#
-i2cset -y -f 10 0x40 0xd4 0x3f1c w
+# Barseboard Yosemite V2 & Yosemite V2.50
+# Baseboard        Board_ID Rev_ID[2] Rev_ID[1] Rev_ID[0]
+# Test board PoC       1       0         0         0
+# Test board EVT       1       0         0         1
+# YV2 PoC              0       0         0         0
+# YV2 EVT              0       0         0         1
+# YV2 DVT              0       0         1         0
+# YV2 PVT              0       0         1         1
+# YV2.50               1       1         X         X
+
+# Enable GPIOY3: BoardId (Yosemite V2 or Yosemite V2.50)
+devmem_clear_bit $(scu_addr a4) 11
+devmem_clear_bit $(scu_addr 94) 11
+gpio_export Y3
+
+# Set up to read the board revision pins, GPIOY0, Y1, Y2
+devmem_clear_scu70_bit 19
+devmem_clear_bit $(scu_addr a4) 8
+devmem_clear_bit $(scu_addr a4) 9
+devmem_clear_bit $(scu_addr a4) 10
+
+gpio_export Y0
+gpio_export Y1
+gpio_export Y2
+
+board_id=`cat /sys/class/gpio/gpio195/value`
+rev_id2=`cat /sys/class/gpio/gpio194/value`
+
+if [[ $board_id == "1" && $rev_id2 == "1" ]]; then
+   spb_type=1
+elif [[ $board_id == "1" && $rev_id2 == "0" ]]; then
+   spb_type=2
+else
+   spb_type=0
+fi
+
+# ADM1278 Configuration
+if [ $spb_type == "1" ]; then
+   # Yosemite V2.50 Platform
+   # Clear PEAK_PIN & PEAK_IOUT register
+   i2cset -y -f 10 0x40 0xd0 0x0000 w
+   i2cset -y -f 10 0x40 0xda 0x0000 w
+
+   #
+   i2cset -y -f 10 0x40 0xd4 0x3c1c w
+   i2cset -y -f 10 0x40 0xd5 0x0400 w
+   i2cset -y -f 10 0x40 0xd8 0x0003 w
+
+   # calibrtion to get HSC to trigger 60A based on EE team input
+   # 0xe18 = 3608 (dec)
+   #(3608*10-20475)/ (800*0.3)= 65.0208A
+   # 65.0208* 0.92259 = 59.9875A
+   i2cset -y -f 10 0x40 0x4a 0x0e18 w
+elif [ $spb_type == "2" ]; then
+   # FBND Platform
+   # Clear PEAK_PIN & PEAK_IOUT register
+   i2cset -y -f 10 0x40 0xd0 0x0000 w
+   i2cset -y -f 10 0x40 0xda 0x0000 w
+
+   #
+   i2cset -y -f 10 0x40 0xd4 0x3f1c w
+   i2cset -y -f 10 0x40 0xd5 0x0400 w
+
+   # calibrtion to get HSC to trigger 63A based on EE team input
+   # 0xe64 = 3686 (dec)
+   #(3684*10-20475)/ (800*0.3)= 68.1875A
+   # 68.1875* 0.92355 = 62.9746A
+   i2cset -y -f 10 0x40 0x4a 0x0e64 w
+else
+   # Yosemite V2 Platform
+   # Clear PEAK_PIN & PEAK_IOUT register
+   i2cset -y -f 10 0x40 0xd0 0x0000 w
+   i2cset -y -f 10 0x40 0xda 0x0000 w
+
+   #
+   i2cset -y -f 10 0x40 0xd4 0x3f1c w
+   i2cset -y -f 10 0x40 0xd5 0x0400 w
+
+   # calibrtion to get HSC to trigger 50A based on EE team input
+   # 0xd14 = 3348 (dec)
+   #(3348*10-20475)/ (800*0.3)= 54.1875A
+   # 54.1875* 0.92190 = 49.9554A
+   i2cset -y -f 10 0x40 0x4a 0x0d14 w
+fi
+
 rmmod adm1275
 modprobe adm1275
-

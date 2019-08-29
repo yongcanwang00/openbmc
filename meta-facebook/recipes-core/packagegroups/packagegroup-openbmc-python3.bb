@@ -26,4 +26,7 @@ RDEPENDS_${PN} += " \
   python3-subprocess \
   python3-syslog \
   python3-threading \
-  "
+  python3-pkgutil \ 
+  python3-unittest \
+  python3-typing \
+"

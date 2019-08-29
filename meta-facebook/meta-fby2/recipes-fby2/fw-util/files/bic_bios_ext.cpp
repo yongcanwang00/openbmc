@@ -11,19 +11,30 @@
 using namespace std;
 
 class BiosExtComponent : public BiosComponent {
-  uint8_t slot_id = 0;
+  uint8_t slot_id;
   Server server;
+  int _update(string image, uint8_t force);
   public:
     BiosExtComponent(string fru, string comp, uint8_t _slot_id)
-      : BiosComponent(fru, comp, _slot_id), slot_id(_slot_id), server(_slot_id, fru) {}
+      : BiosComponent(fru, comp, _slot_id), slot_id(_slot_id), server(_slot_id, fru) {
+      if (!pal_is_slot_server(_slot_id)) {
+        (*fru_list)[fru].erase(comp);
+        if ((*fru_list)[fru].size() == 0) {
+          fru_list->erase(fru);
+        }
+      }
+    }
     int update(string image);
+    int fupdate(string image);
     int dump(string image);
+    int print_version();
 };
 
-int BiosExtComponent::update(string image) {
+int BiosExtComponent::_update(string image, uint8_t force) {
   int ret;
   uint8_t status;
   int retry_count = 60;
+
 #if defined(CONFIG_FBY2_EP) || defined(CONFIG_FBY2_RC)
   uint8_t server_type = 0xFF;
   uint8_t gs_action = 1;
@@ -114,7 +125,7 @@ power_check:
     me_recovery(slot_id, RECOVERY_MODE);
     sleep(1);
 #endif
-    ret = bic_update_fw(slot_id, UPDATE_BIOS, (char *)image.c_str());
+    ret = bic_update_firmware(slot_id, UPDATE_BIOS, (char *)image.c_str(), force);
     sleep(1);
     pal_set_server_power(slot_id, SERVER_12V_CYCLE);
     sleep(5);
@@ -123,6 +134,14 @@ power_check:
     return FW_STATUS_NOT_SUPPORTED;
   }
   return ret;
+}
+
+int BiosExtComponent::update(string image) {
+  return _update(image, 0);
+}
+
+int BiosExtComponent::fupdate(string image) {
+  return _update(image, 1);
 }
 
 int BiosExtComponent::dump(string image) {
@@ -230,6 +249,14 @@ power_check:
   return ret;
 }
 
+int BiosExtComponent::print_version() {
+  if (fby2_get_slot_type(slot_id) == SLOT_TYPE_SERVER) {
+    BiosComponent::print_version();
+  }
+  return 0;
+}
+
+// Register the BIOS components
 BiosExtComponent bios1("slot1", "bios", 1);
 BiosExtComponent bios2("slot2", "bios", 2);
 BiosExtComponent bios3("slot3", "bios", 3);

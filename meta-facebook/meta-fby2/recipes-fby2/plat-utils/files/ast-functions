@@ -1,4 +1,7 @@
 # Copyright 2014-present Facebook. All Rights Reserved.
+
+. /usr/bin/kv
+
 DEVMEM=/sbin/devmem
 
 devmem_set_bit() {
@@ -27,6 +30,14 @@ devmem_clear_scu70_bit() {
 
 scu_addr() {
     echo $((0x1E6E2000 + 0x$1))
+}
+
+uart1_addr() {
+    echo $((0x1E783000 + 0x$1))
+}
+
+uart3_addr() {
+    echo $((0x1E78E000 + 0x$1))
 }
 
 #LPC Controller, Base Address = 0x1E78_9000
@@ -190,22 +201,46 @@ is_server_prsnt() {
   fi
 }
 
+read_file_rertry() {
+  retries=$1
+  wait_time=$2
+  file=$3
+
+  for i in `seq 1 $retries`; do
+    value=`cat $file`
+    [ ! -z $value ] && break
+    usleep $wait_time
+  done
+
+  echo $value
+}
+
 # Get slot type (00:TwinLakes, 01:Crace Flat, 10:Glacier Point, 11:Empty Slot)
 get_slot_type() {
-  slot_num=$1
-  slot_bin=`cat /tmp/slot.bin`
-
-  type=$(($(($slot_bin >> $(($(($slot_num*2)) - 2)))) & 3))
+  slot_file="/tmp/slot$1.bin"
+  if [ -f $slot_file ]; then
+    type=$(read_file_rertry 3 10000 $slot_file)
+    if [ -z $type ]; then
+      type=3
+    fi
+  else
+    type=3
+  fi
 
   echo $type
 }
 
 # Get server type (00:TwinLakes, 01:RC, 10:EP, 11:Unknown)
 get_server_type() {
-  slot_num=$1
-  server_type_bin=`cat /tmp/server_type.bin`
-
-  type=$(($(($server_type_bin >> $(($(($slot_num*2)) - 2)))) & 3))
+  server_type_file="/tmp/server_type$1.bin"
+  if [ -f $server_type_file ]; then
+    type=$(read_file_rertry 3 10000 $server_type_file)
+    if [ -z $type ]; then
+      type=3
+    fi
+  else
+    type=3
+  fi
 
   echo $type
 }
@@ -240,13 +275,27 @@ is_bic_ready() {
 }
 
 fby2_is_server_on() {
-    local curr_pwr_cpu
-    curr_pwr_cpu=$(python -c 'import sys; sys.path.append("/usr/local/fbpackages/utils"); import power_util; print power_util.get_pwr_cpu()')
-    if [ $curr_pwr_cpu == "1" ]; then
-        echo 1
-    else
-        echo 0
-    fi
+  local pwr_sts
+
+  case $1 in
+   1)
+    pwr_sts=$(gpio_get I0)
+    ;;
+   2)
+    pwr_sts=$(gpio_get I1)
+    ;;
+   3)
+    pwr_sts=$(gpio_get I2)
+    ;;
+   4)
+    pwr_sts=$(gpio_get I3)
+    ;;
+   *)
+    pwr_sts="0"
+    ;;
+  esac
+
+  echo $pwr_sts
 }
 
 gpio_get_val() {
@@ -333,6 +382,15 @@ is_slot_12v_on() {
 
   if [ $status == "1" ]; then
     echo 1
+  else
+    echo 0
+  fi
+}
+
+# Check to see if BMC time synced
+is_date_synced() {
+  if [ -f /tmp/sync_date ]; then
+    /bin/cat /tmp/sync_date
   else
     echo 0
   fi

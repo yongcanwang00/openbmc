@@ -28,6 +28,7 @@
 . /usr/local/fbpackages/utils/ast-functions
 
 time_sync_success=0
+time_sync_with_IMC=0
 
 # Sync BMC's date with one of the four servers
 sync_date()
@@ -39,8 +40,9 @@ sync_date()
     default_time_l=4A   #default time low byte 2018-01-01
     for i in 1 2 3 4 
     do
-      if [[ $(is_server_prsnt $i) == "1" && $(get_slot_type $i) == "0" ]] ; then
+      if [[ $(is_server_prsnt $i) == "1" && $(get_slot_type $i) == "0" && $(get_server_type $i) == "1" ]] ; then
         retry_times=0
+        time_sync_with_IMC=1
         while [ ${retry_times} -lt ${max_retry} ]
         do
           # Use IMC command 'get-rtc-time' to read RTC time
@@ -53,6 +55,7 @@ sync_date()
             if [ "$time_h" -gt $((16#${default_time_h})) ] ; then
               echo Syncing up BMC time with server$i...
               date -s @$((16#$(echo $output | awk '{print $12$11$10$9}')))
+              test -x /etc/init.d/hwclock.sh && /etc/init.d/hwclock.sh stop
               time_sync_success=1
               break
             fi
@@ -60,6 +63,7 @@ sync_date()
             if [[ "$time_h" -ge $((16#${default_time_h})) && "$time_l" -ge $((16#${default_time_l})) ]] ; then
               echo Syncing up BMC time with server$i...
               date -s @$((16#$(echo $output | awk '{print $12$11$10$9}')))
+              test -x /etc/init.d/hwclock.sh && /etc/init.d/hwclock.sh stop
               time_sync_success=1
               break
             fi
@@ -72,9 +76,15 @@ sync_date()
         break
       fi
     done
-    if [ $time_sync_success == 0 ] ; then
+    # This log only appears in the RC system
+    if [[ $time_sync_success == 0 && $time_sync_with_IMC == 1 ]] ; then
       logger -p user.crit "Time sync with IMC failed, using 2018/01/01 as default" 
     fi
+  fi
+  sts=$(ifconfig eth0 | grep -i "inet addr")
+  if [ "$sts" == "" ]; then    #No ipv4 ip
+    kill -9 `cat /var/run/dhclient.eth0.pid`
+    dhclient -pf /var/run/dhclient.eth0.pid eth0
   fi
 }
 

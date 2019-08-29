@@ -23,14 +23,72 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
 
 board_rev=$(wedge_board_rev)
 
-# # Bus 5
-i2c_device_add 5 0x33 com_e_driver     # COM-e
+#
+# instantiate all the i2c-muxes.
+# Note:
+#   - the step is not needed in kernel 4.1 because all the i2c-muxes
+#     are created in 4.1 kernel code.
+#   - please do not modify the order of i2c-mux creation unless you've
+#     decided to fix bus-number of leaf i2c-devices.
+#
+bulk_create_i2c_mux() {
+    i2c_mux_name="pca9548"
+
+    # The first-level i2c-muxes which are directly connected to aspeed
+    # i2c adapters are described in device tree, and the bus number of
+    # these i2c-muxes' channels are hardcoded (as below) to avoid
+    # breaking the existing applications.
+    #    i2c-mux 2-0070: child bus 16-23
+    #    i2c-mux 8-0070: child bus 24-31
+    #    i2c-mux 9-0070: child bus 32-39
+    #    i2c-mux 11-0070: child bus 40-47
+    last_child_bus=47
+
+    # Create second-level i2c-muxes which are connected to first level
+    # mux "8-0070". "8-0070" has 8 channels and the first 4 channels
+    # are connected with 1 extra level of i2c-mux. So total 32 child
+    # buses (48-79) will be registered.
+    last_child_bus=$((last_child_bus + 8))
+    i2c_mux_add_sync 24 0x71 ${i2c_mux_name} ${last_child_bus}
+
+    last_child_bus=$((last_child_bus + 8))
+    i2c_mux_add_sync 25 0x72 ${i2c_mux_name} ${last_child_bus}
+
+    last_child_bus=$((last_child_bus + 8))
+    i2c_mux_add_sync 26 0x76 ${i2c_mux_name} ${last_child_bus}
+
+    last_child_bus=$((last_child_bus + 8))
+    i2c_mux_add_sync 27 0x76 ${i2c_mux_name} ${last_child_bus}
+
+
+    # Create second-level i2c-muxes which are connected to first level
+    # mux "11-0070". "11-0070" has 8 channels and each channel is
+    # connected with 1 extra level of i2c-mux (@ address 0x73), thus
+    # totally 64 i2c buses (80-143) will be registered.
+    parent_buses="40 41 42 43 44 45 46 47"
+    for bus in ${parent_buses}; do
+        last_child_bus=$((last_child_bus + 8))
+        i2c_mux_add_sync ${bus} 0x73 ${i2c_mux_name} ${last_child_bus}
+    done
+}
+
+KERNEL_VERSION=`uname -r`
+if [[ ${KERNEL_VERSION} != 4.1.* ]]; then
+    bulk_create_i2c_mux
+
+    # Create i2c slave backend on bus 0 and 4.
+    i2c_mslave_add 0 0x10
+    i2c_mslave_add 4 0x10
+fi
 
 # # Bus 2
 i2c_device_add 2 0x35 scmcpld          # SCMCPLD
 
 # # Bus 12
 i2c_device_add 12 0x3e smbcpld         # SMBCPLD
+
+# # Bus 13
+i2c_device_add 13 0x35 iobfpga         # IOBFPGA
 
 # # Bus 1
 i2c_device_add 1 0x3a powr1220         # SMB power sequencer
@@ -129,4 +187,10 @@ BUS="81 89 97 105 113 121 129 137"
 for bus in ${BUS}; do
     i2c_device_add $bus 0x53 24c64     # 4DD
     i2c_device_add $bus 0x56 24c64     # 16Q
+done
+
+# # Bus 80 88 96 104 112 120 128 136  # PIM1 ~ PIM8 DOMFPGA
+BUS="80 88 96 104 112 120 128 136"
+for bus in ${BUS}; do
+    i2c_device_add $bus 0x60 domfpga
 done

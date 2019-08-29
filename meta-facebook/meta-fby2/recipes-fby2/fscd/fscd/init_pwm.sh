@@ -44,6 +44,32 @@ echo 95 > $PWM_DIR/pwm_type_m_unit
 # staring from the one from the edge
 # Fan 0: PWM 0, Tacho0
 # Fan 1: PWM 0, Tacho1
+#
+# On fby2.50, there are 4 fan connected.
+# Fan 0: PWM 0, Tacho0
+# Fan 1: PWM 0, Tacho2
+# Fan 2: PWM 0, Tacho1
+# Fan 3: PWM 0, Tacho3
+
+fan_num=0
+board_id=`cat /sys/class/gpio/gpio195/value`
+rev_id2=`cat /sys/class/gpio/gpio194/value`
+if [[ $board_id == "1" && $rev_id2 == "1" ]]; then
+   spb_type=1
+else
+   spb_type=0
+fi
+
+fan_type=`cat /sys/class/gpio/gpio54/value`
+if [[ $spb_type == "1" && $fan_type == "0" ]]; then
+    # 0 base
+    fan_num=3
+    echo "FAN CONFIG : Dual Rotor FAN"
+else
+    # 0 base
+    fan_num=1
+    echo "FAN CONFIG : Single Rotor FAN"
+fi
 
 # For each fan, setting the type, and 100% initially
 for pwm in 0 1; do
@@ -53,12 +79,19 @@ for pwm in 0 1; do
     echo 1 > $PWM_DIR/pwm${pwm}_en
 done
 
-# Enable Tach 0..1
-echo 0 > $PWM_DIR/tacho0_source
-echo 1 > $PWM_DIR/tacho1_source
-
-t=0
-while [ $t -le 1 ]; do
-    echo 1 > $PWM_DIR/tacho${t}_en
-    t=$((t+1))
-done
+# Enable Tach
+if [[ $spb_type == "1" && $fan_type == "1" ]]; then
+    echo 0 > $PWM_DIR/tacho2_source
+    echo 0 > $PWM_DIR/tacho3_source
+    echo 1 > $PWM_DIR/tacho2_en
+    echo 1 > $PWM_DIR/tacho3_en
+else 
+    for tach in 0 $fan_num; do
+        echo 0 > $PWM_DIR/tacho${tach}_source
+    done
+    t=0
+    while [ $t -le $fan_num ]; do
+        echo 1 > $PWM_DIR/tacho${t}_en
+        t=$((t+1))
+    done
+fi

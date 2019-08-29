@@ -25,6 +25,7 @@
 #include <openbmc/ipmi.h>
 #include <openbmc/ipmb.h>
 #include <openbmc/obmc-pal.h>
+#include <openbmc/obmc-sensor.h>
 #include <facebook/bic.h>
 #include <facebook/yosemite_common.h>
 
@@ -38,11 +39,7 @@ extern "C" {
 #define MAX_RETRIES_SDR_INIT  30
 #define THERMAL_CONSTANT      255
 #define ERR_NOT_READY         -2
-
-typedef struct _sensor_info_t {
-  bool valid;
-  sdr_full_t sdr;
-} sensor_info_t;
+#define EER_UNHANDLED         -4
 
 // Sensors under Bridge IC
 enum {
@@ -128,7 +125,17 @@ enum {
 
 enum{
   MEZZ_SENSOR_TEMP = 0x82,
+
+  // PLDM numeric sensors
+  NIC_SOC_TEMP = PLDM_NUMERIC_SENSOR_START,
+  PORT_0_TEMP,
+  PORT_0_LINK_SPEED,
+
+  // PLDM state sensors
+  NIC_HEALTH_STATE = PLDM_STATE_SENSOR_START,
+  PORT_0_LINK_STATE,
 };
+
 extern const uint8_t bic_sensor_list[];
 
 extern const uint8_t bic_discrete_list[];

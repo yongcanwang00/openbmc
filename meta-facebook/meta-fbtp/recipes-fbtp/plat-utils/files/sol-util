@@ -37,11 +37,12 @@ if [ $# -gt 1 ]; then
     usage
   fi
   if [[ "$2" == "--history" ]]; then
-    LOGFILE="/var/log/mTerm_mb.log"
-    cat $LOGFILE 2>/dev/null
+    LOGFILE="/var/log/mTerm_fbtp.log"
+    LOGFILE_B="/var/log/mTerm_fbtp_backup.log"
+    cat $LOGFILE_B $LOGFILE 2>/dev/null
     exit 0
   else
     usage
   fi
 fi
-exec /usr/local/bin/mTerm_client mb
+exec /usr/local/bin/mTerm_client fbtp

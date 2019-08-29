@@ -59,6 +59,10 @@
 
 #define GPIO_VAL "/sys/class/gpio/gpio%d/value"
 
+#define FW_UPDATE_ONGOING 1
+#define CRASHDUMP_ONGOING 2
+#define CPLDDUMP_ONGOING  3
+
 static uint8_t g_sync_led[MAX_NUM_SLOTS+1] = {0x0};
 static uint8_t m_pos = 0xff;
 static uint8_t m_fan_latch = 0;
@@ -83,7 +87,7 @@ debug_card_handler() {
   int prev = -1;
   int ret;
   uint8_t prsnt = 0;
-  uint8_t pos;
+  uint8_t pos, usb_pos;
   uint8_t prev_pos = 0xff, prev_phy_pos = 0xff;
   uint8_t lpc;
   uint8_t status;
@@ -134,8 +138,13 @@ get_hand_sw_cache:
     }
 
 debug_card_prs:
-    if (pos <= MAX_NUM_SLOTS) {
-      if (!pal_is_slot_server(pos) || (!pal_get_server_power(pos, &status) && (status != SERVER_POWER_ON))) {
+    ret = pal_get_usb_sw(&usb_pos);
+    if (ret) {
+      goto debug_card_out;
+    }
+
+    if (usb_pos <= MAX_NUM_SLOTS) {
+      if (!pal_is_slot_server(usb_pos) || (!pal_get_server_power(usb_pos, &status) && (status != SERVER_POWER_ON))) {
         pal_enable_usb_mux(USB_MUX_OFF);
       } else {
         pal_enable_usb_mux(USB_MUX_ON);
@@ -214,6 +223,68 @@ debug_card_out:
   return 0;
 }
 
+static int
+is_btn_blocked(uint8_t fru, uint8_t * ongoing_fru) {
+  uint8_t fru_start, fru_end, fru_sys_end;
+  uint8_t i,pair_fru;
+
+  *ongoing_fru = fru;
+  if (fru == HAND_SW_BMC) {
+    fru_start = FRU_SLOT1;
+    fru_end = FRU_SLOT4;
+    fru_sys_end = FRU_BMC;
+  } else {
+    fru_start = fru_end = fru_sys_end = fru;
+  }
+
+  for (i = fru_start; i <= fru_sys_end; i++) {
+    if (pal_is_fw_update_ongoing(i)) {
+      *ongoing_fru = i;
+      return FW_UPDATE_ONGOING;
+    }
+  }
+
+  for (i = fru_start; i <= fru_end; i++) {
+    if (pal_is_crashdump_ongoing(i)) {
+      *ongoing_fru = i;
+      return CRASHDUMP_ONGOING;
+    }
+  }
+
+  for (i = fru_start; i <= fru_end; i++) {
+    if (pal_is_cplddump_ongoing(i)) {
+      *ongoing_fru = i;
+      return CPLDDUMP_ONGOING;
+    }
+  }
+
+  // Device Card + Server
+  switch (pal_get_pair_slot_type(fru)) {
+    case TYPE_CF_A_SV:
+    case TYPE_GP_A_SV:
+    case TYPE_GPV2_A_SV:
+      if (0 == fru%2)
+        pair_fru = fru - 1;
+      else
+        pair_fru = fru + 1;
+      if (pal_is_fw_update_ongoing(pair_fru)) {
+        *ongoing_fru = pair_fru;
+        return FW_UPDATE_ONGOING;
+      }
+      if (pal_is_crashdump_ongoing(pair_fru)) {
+        *ongoing_fru = pair_fru;
+        return CRASHDUMP_ONGOING;
+      }
+      if (pal_is_cplddump_ongoing(pair_fru)) {
+        *ongoing_fru = pair_fru;
+        return CPLDDUMP_ONGOING;
+      }
+      return 0;
+    default:
+      return 0;
+  }
+}
+
 // Thread to monitor Reset Button and propagate to selected server
 static void *
 rst_btn_handler() {
@@ -222,6 +293,7 @@ rst_btn_handler() {
   int i;
   uint8_t btn;
   uint8_t last_btn = 0;
+  uint8_t ongoing_fru;
 
   ret = pal_get_rst_btn(&btn);
   if (0 == ret) {
@@ -242,6 +314,23 @@ rst_btn_handler() {
     if (ret || !btn) {
       if (last_btn != btn) {
         pal_set_rst_btn(pos, 1);
+      }
+      goto rst_btn_out;
+    }
+
+    if ((ret = is_btn_blocked(pos,&ongoing_fru))) {
+      if (!last_btn) {
+        switch (ret) {
+          case FW_UPDATE_ONGOING:
+            syslog(LOG_CRIT, "Reset Button blocked due to FW update is ongoing, FRU: %d", ongoing_fru);
+            break;
+          case CRASHDUMP_ONGOING:
+            syslog(LOG_CRIT, "Reset Button blocked due to crashdump is ongoing, FRU: %d", ongoing_fru);
+            break;
+          case CPLDDUMP_ONGOING:
+            syslog(LOG_CRIT, "Reset Button blocked due to CPLD dump is ongoing, FRU: %d", ongoing_fru);
+            break;
+        }
       }
       goto rst_btn_out;
     }
@@ -293,9 +382,9 @@ pwr_btn_handler() {
   uint8_t power, st_12v = 0;
   char tstr[64];
   bool release_flag = true;
+  uint8_t ongoing_fru;
 
   while (1) {
-
     // Check the position of hand switch
     ret = get_handsw_pos(&pos);
     if (ret) {
@@ -329,6 +418,21 @@ pwr_btn_handler() {
       release_flag = true;
       syslog(LOG_WARNING, "Power button released\n");
       break;
+    }
+
+    if ((ret = is_btn_blocked(pos,&ongoing_fru))) {
+      switch (ret) {
+        case FW_UPDATE_ONGOING:
+          syslog(LOG_CRIT, "Power Button blocked due to FW update is ongoing, FRU: %d", ongoing_fru);
+          break;
+        case CRASHDUMP_ONGOING:
+          syslog(LOG_CRIT, "Power Button blocked due to crashdump is ongoing, FRU: %d", ongoing_fru);
+          break;
+        case CPLDDUMP_ONGOING:
+          syslog(LOG_CRIT, "Power Button blocked due to CPLD dump is ongoing, FRU: %d", ongoing_fru);
+          break;
+      }
+      goto pwr_btn_out;
     }
 
     // Get the current power state (power on vs. power off)
@@ -579,13 +683,13 @@ led_sync_handler() {
       }
 
       // Start blinking Blue LED
-      for (slot = 1; slot <= 4; slot++) {
+      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
         pal_set_led(slot, LED_ON);
       }
 
       msleep(LED_ON_TIME_BMC_SELECT);
 
-      for (slot = 1; slot <= 4; slot++) {
+      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
         pal_set_led(slot, LED_OFF);
       }
 
@@ -608,7 +712,7 @@ led_sync_handler() {
 
     // Handle individual identify slot condition
     if (ident) {
-      for (slot = 1; slot <=4; slot++) {
+      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
         if (id_arr[slot]) {
           g_sync_led[slot] = 1;
           pal_set_led(slot, LED_OFF);
@@ -623,7 +727,7 @@ led_sync_handler() {
 
       msleep(LED_ON_TIME_IDENTIFY);
 
-      for (slot = 1; slot <=4; slot++) {
+      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
         if (id_arr[slot]) {
           pal_set_id_led(slot, ID_LED_OFF);
           pal_set_slot_id_led(slot, LED_OFF); // Slot ID LED on top of each TL
@@ -634,7 +738,7 @@ led_sync_handler() {
       continue;
     }
 
-    for (slot = 1; slot <= 4; slot++) {
+    for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
       g_sync_led[slot] = 0;
     }
     msleep(500);
@@ -647,8 +751,8 @@ led_sync_handler() {
 static void *
 seat_led_handler() {
   int ret;
-  uint8_t slot, val;
-  int ident;
+  uint8_t slot, val, ident;
+  uint8_t slot_12v_on, slot_prsnt;
 
   while (1) {
     ret = pal_get_fan_latch(&val);
@@ -659,14 +763,30 @@ seat_led_handler() {
     m_fan_latch = val;
 
     // Handle Sled fully seated
-    if (val) { // SLED is pull out
+    if (val) {  // SLED is pull out
       pal_set_sled_led(LED_ON);
-    } else {   // SLED is fully pull in
+
+      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
+        if (pal_is_hsvc_ongoing(slot))
+          continue;
+        if (pal_is_server_12v_on(slot, &slot_12v_on))
+          continue;
+        if (pal_is_fru_prsnt(slot, &slot_prsnt))
+          continue;
+
+        if (slot_prsnt != 1 || slot_12v_on != 1) {
+          pal_set_slot_id_led(slot, LED_OFF);  // Turn slot ID LED off
+        } else {
+          pal_set_slot_id_led(slot, LED_ON);   // Turn slot ID LED on
+        }
+      }
+    } else {    // SLED is fully pull in
       ident = 0;
-      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++)  {
+      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
         if (pal_is_hsvc_ongoing(slot)) {
           ident = 1;
         }
+        pal_set_slot_id_led(slot, LED_OFF);    // Turn slot ID LED off
       }
 
       // Start blinking the SEAT LED
@@ -688,45 +808,6 @@ seat_led_handler() {
   return 0;
 }
 
-// Thread to handle Slot ID LED state
-static void *
-slot_id_led_handler() {
-  int slot;
-  uint8_t p_fan_latch;
-  int ret_slot_12v_on;
-  int ret_slot_prsnt;
-  uint8_t status_slot_12v_on;
-  uint8_t status_slot_prsnt;
-
-  while(1) {
-    p_fan_latch = m_fan_latch;
-
-    if(p_fan_latch) {  // SLED is pulled out
-      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
-        if(!pal_is_hsvc_ongoing(slot)) {
-          ret_slot_12v_on = pal_is_server_12v_on(slot, &status_slot_12v_on);
-          ret_slot_prsnt = pal_is_fru_prsnt(slot, &status_slot_prsnt);
-          if (ret_slot_12v_on < 0 || ret_slot_prsnt < 0)
-            continue;
-          if (status_slot_prsnt != 1 || status_slot_12v_on != 1)
-            pal_set_slot_id_led(slot, LED_OFF); //Turn slot ID LED off
-          else
-            pal_set_slot_id_led(slot, LED_ON); //Turn slot ID LED on
-        }
-      }
-    } else { // SLED is fully pulled in
-      for (slot = 1; slot <= MAX_NUM_SLOTS; slot++) {
-        if(!pal_is_hsvc_ongoing(slot))
-          pal_set_slot_id_led(slot, LED_OFF); //Turn slot ID LED off
-      }
-    }
-
-    sleep(1);
-  }
-
-  return 0;
-}
-
 int
 main (int argc, char * const argv[]) {
   pthread_t tid_debug_card;
@@ -735,7 +816,6 @@ main (int argc, char * const argv[]) {
   pthread_t tid_sync_led;
   pthread_t tid_led;
   pthread_t tid_seat_led;
-  pthread_t tid_slot_id_led;
   int rc;
   int pid_file;
   int slot_id;
@@ -743,12 +823,11 @@ main (int argc, char * const argv[]) {
   char slot_kv[80] = {0};
   int ret;
 
-  for(slot_id = 1 ;slot_id < MAX_NUM_SLOTS + 1; slot_id++)
-  {
-    for(i = 0; i < sizeof(slot_kv_list)/sizeof(slot_kv_st); i++) { 
+  for (slot_id = 1; slot_id <= MAX_NUM_SLOTS; slot_id++) {
+    for (i = 0; i < sizeof(slot_kv_list)/sizeof(slot_kv_st); i++) {
       memset(slot_kv, 0, sizeof(slot_kv));
       sprintf(slot_kv, slot_kv_list[i].slot_key, slot_id);
-      if ((ret = pal_set_key_value(slot_kv, slot_kv_list[i].slot_def_val)) < 0) {        //Restore Slot indication LED status to normal when BMC reset
+      if ((ret = pal_set_key_value(slot_kv, slot_kv_list[i].slot_def_val)) < 0) {  //Restore Slot indication LED status to normal when BMC reset
         syslog(LOG_WARNING, "%s %s: kv_set failed. %d", __func__, slot_kv_list[i].slot_key, ret);
       }
     }
@@ -796,19 +875,12 @@ main (int argc, char * const argv[]) {
     exit(1);
   }
 
-  if (pthread_create(&tid_slot_id_led, NULL, slot_id_led_handler, NULL) < 0) {
-    syslog(LOG_WARNING, "pthread_create for slot id led error\n");
-    exit(1);
-  }
-
-
   pthread_join(tid_debug_card, NULL);
   pthread_join(tid_rst_btn, NULL);
   pthread_join(tid_pwr_btn, NULL);
   pthread_join(tid_sync_led, NULL);
   pthread_join(tid_led, NULL);
   pthread_join(tid_seat_led, NULL);
-  pthread_join(tid_slot_id_led, NULL);
 
   return 0;
 }

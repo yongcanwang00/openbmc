@@ -43,21 +43,10 @@
 
 echo "Set up GPIO pins....."
 
-# Set up to read the board revision pins, Y0, Y1, Y2
-devmem_clear_scu70_bit 19
-devmem_clear_bit $(scu_addr a4) 8
-devmem_clear_bit $(scu_addr a4) 9
-devmem_clear_bit $(scu_addr a4) 10
-
-gpio_export Y0
-gpio_export Y1
-gpio_export Y2
-
 # SLOT1_PRSNT_N, GPIOAA0 (208)
 # GPIOAA0(208): SCU90[31], SCUA4[24] shall be 0
 devmem_clear_bit $(scu_addr 90) 31
 devmem_clear_bit $(scu_addr a4) 24
-
 gpio_export AA0
 
 # SLOT2_PRSNT_N, GPIOAA1 (209)
@@ -71,9 +60,29 @@ devmem_clear_bit $(scu_addr a4) 26
 gpio_export AA2
 
 # SLOT4_PRSNT_N, GPIOAA3 (211)
-# GPIOAA3(211): SCU90[6], SCUA4[27] shall be 0
+# GPIOAA3(211): SCU90[31], SCUA4[27] shall be 0
 devmem_clear_bit $(scu_addr a4) 27
 gpio_export AA3
+
+# SLOT1_PRSNT_B_N, GPIOZ0 (200)
+# GPIOZ0(200): SCU90[31], SCUA4[16] shall be 0
+devmem_clear_bit $(scu_addr a4) 16
+gpio_export Z0
+
+# SLOT2_PRSNT_B_N, GPIOZ1 (201)
+# GPIOZ1(201): SCU90[31], SCUA4[17] shall be 0
+devmem_clear_bit $(scu_addr a4) 17
+gpio_export Z1
+
+# SLOT3_PRSNT_B_N, GPIOZ2 (202)
+# GPIOZ2(202): SCU90[31], SCUA4[18] shall be 0
+devmem_clear_bit $(scu_addr a4) 18
+gpio_export Z2
+
+# SLOT4_PRSNT_B_N, GPIOZ3 (203)
+# GPIOZ3(203): SCU90[31], SCUA4[19] shall be 0
+devmem_clear_bit $(scu_addr a4) 19
+gpio_export Z3
 
 # BMC_PWR_BTN_IN_N, uServer power button in, on GPIO D0(24)
 gpio_export D0
@@ -193,12 +202,6 @@ devmem_clear_bit $(scu_addr 80) 19
 
 gpio_export E3
 
-# Enable GPIOY3: BoardId(Yosemite or Test system)
-devmem_clear_bit $(scu_addr a4) 11
-devmem_clear_bit $(scu_addr 94) 11
-
-gpio_export Y3
-
 # Power LED for Slot#2:
 # To use GPIOM0 (96), SCU90[4], SCU90[5], and SCU84[24] must be 0
 devmem_clear_bit $(scu_addr 90) 4
@@ -314,6 +317,13 @@ devmem_clear_bit $(scu_addr 84) 3
 
 gpio_set G3 0
 
+# DUAL FAN DETECT: GPIOG6 (54)
+# To use GPIOG6, SCU84[7] and SCU94[12]  must be 0
+devmem_clear_bit $(scu_addr 84) 7
+devmem_clear_bit $(scu_addr 94) 12
+
+gpio_export G6
+
 # LED_POSTCODE_4: GPIOP4 (124)
 gpio_set P4 0
 
@@ -358,26 +368,34 @@ gpio_set S3 1
 # P12V_STBY_SLOT1_EN: GPIOO4 (116)
 # To use GPIOO4, SCU88[12] must be 0
 devmem_clear_bit $(scu_addr 88) 12
-
 gpio_export O4
+if [[ $(is_server_prsnt 1) == "1" && $(is_slot_12v_on 1) != "1" ]]; then
+  gpio_set O4 1
+fi
 
 # P12V_STBY_SLOT2_EN: GPIOO5 (117)
 # To use GPIOO5, SCU88[13] must be 0
 devmem_clear_bit $(scu_addr 88) 13
-
 gpio_export O5
+if [[ $(is_server_prsnt 2) == "1" && $(is_slot_12v_on 2) != "1" ]]; then
+  gpio_set O5 1
+fi
 
 # P12V_STBY_SLOT3_EN: GPIOO6 (118)
 # To use GPIOO6, SCU88[13] must be 0
 devmem_clear_bit $(scu_addr 88) 14
-
 gpio_export O6
+if [[ $(is_server_prsnt 3) == "1" && $(is_slot_12v_on 3) != "1" ]]; then
+  gpio_set O6 1
+fi
 
 # P12V_STBY_SLOT4_EN: GPIOO7 (119)
 # To use GPIOO7, SCU88[15] must be 0
 devmem_clear_bit $(scu_addr 88) 15
-
 gpio_export O7
+if [[ $(is_server_prsnt 4) == "1" && $(is_slot_12v_on 4) != "1" ]]; then
+  gpio_set O7 1
+fi
 
 # SLOT1_EJECTOR_LATCH_DETECT_N: GPIOP0 (120)
 # To use GPIOP0, SCU88[16] must be 0
@@ -484,8 +502,8 @@ $DEVMEM 0x1e780050 32 0x179A7B0
 # Select debounce timer #1 for GPIOZ0~GPIOZ3 and GPIOAA0~GPIOAA3
 $DEVMEM 0x1e780194 32 0xF0F00
 
-# Set debounce timer #2 value to 0xF1B3 ~= 5ms
-$DEVMEM 0x1e780054 32 0xF1B3
+# Set debounce timer #2 value to 0x25C3F8 ~= 200ms
+$DEVMEM 0x1e780054 32 0x25C3F8
 
 # Select debounce timer #2 for GPIOP0~GPIOP3
 $DEVMEM 0x1e780100 32 0xF000000

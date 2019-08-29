@@ -18,6 +18,7 @@
 GPIODIR="/sys/class/gpio"
 GPIOEXPORT="$GPIODIR/export"
 SHADOW_GPIO=/tmp/gpionames
+GPIOCLI_CMD=/usr/local/bin/gpiocli
 
 gpio_dir() {
     echo "$GPIODIR/gpio$1"
@@ -79,6 +80,31 @@ gpio_export() {
     fi
 }
 
+gpio_export_by_name() {
+    local chip=$1
+    local name=$2
+    local shadow=$3
+
+    echo "exporting gpio (${chip}, ${name}), shadow=${shadow}"
+    $GPIOCLI_CMD --chip ${chip} --pin-name ${name} --shadow ${shadow} export
+}
+
+gpio_export_by_offset() {
+    local chip=$1
+    local offset=$2
+    local shadow=$3
+
+    echo "exporting gpio (${chip}, ${offset}), shadow=${shadow}"
+    $GPIOCLI_CMD --chip ${chip} --pin-offset ${offset} --shadow ${shadow} export
+}
+
+gpio_unexport() {
+    local shadow=$1
+
+    echo "unexporting gpio ${shadow}"
+    $GPIOCLI_CMD --shadow ${shadow} unexport
+}
+
 gpio_set() {
     local gpio
     local val
@@ -112,6 +138,56 @@ gpio_get() {
 }
 
 #
+# Set gpio pin with the given value.
+# $1 - GPIO pin shadow name
+# $2 - GPIO value
+#
+gpio_set_value() {
+    local shadow="$1"
+    local value="$2"
+
+    "${GPIOCLI_CMD}" --shadow "${shadow}" set-init-value "${value}"
+}
+
+#
+# Get value of the given gpio pin.
+# $1 - GPIO pin shadow name
+#
+gpio_get_value() {
+    local shadow="$1"
+
+    val=$("${GPIOCLI_CMD}" --shadow "${shadow}" get-value)
+    if [ "$?" == "0" ]; then
+        echo "${val}" | cut -d'=' -f2
+    fi
+}
+
+#
+# Set the GPIO pin with given direction.
+# $1 - GPIO pin shadow name
+# $2 - GPIO pin direction: "in" or "out"
+#
+gpio_set_direction() {
+    local shadow="$1"
+    local direction="$2"
+
+    "${GPIOCLI_CMD}" --shadow "${shadow}" set-direction "${direction}"
+}
+
+#
+# Get the direction of given GPIO pin.
+# $1 - GPIO pin shadow name
+#
+gpio_get_direction() {
+    local shadow="$1"
+
+    dir=$("${GPIOCLI_CMD}" --shadow "${shadow}" get-direction)
+    if [ "$?" == "0" ]; then
+        echo "${dir}" | cut -d'=' -f2
+    fi
+}
+
+#
 # Lookup sysfs "gpiochip###" directory based on chip label.
 # $1 - gpiochip label
 #
@@ -123,12 +199,11 @@ gpiochip_lookup_by_label() {
         if [[ ${entry} == gpiochip* ]]; then
             label=`cat ${GPIODIR}/${entry}/label`
             if [ ${label} = ${input_label} ]; then
-                break
+                echo ${entry}
+                return
             fi
         fi
     done
-
-    echo $entry
 }
 
 #
@@ -144,12 +219,11 @@ gpiochip_lookup_by_i2c_path() {
         if [[ ${entry} == gpiochip* ]]; then
             link_path=$(readlink -f ${GPIODIR}/${entry} 2>/dev/null)
             if [[ ${link_path} == *i2c*/${i2c_path}/* ]]; then
-                break;
+                echo ${entry}
+                return
             fi
         fi
     done
-
-    echo ${entry}
 }
 
 #
@@ -158,5 +232,9 @@ gpiochip_lookup_by_i2c_path() {
 #
 gpiochip_get_base() {
     local chip=${1}
-    cat ${GPIODIR}/${chip}/base
+    local chip_dir="${GPIODIR}/${chip}"
+
+    if [ -L ${chip_dir} ]; then
+       cat ${chip_dir}/base
+    fi
 }

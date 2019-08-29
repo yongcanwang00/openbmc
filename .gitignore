@@ -1,6 +1,5 @@
 # id-utils files
 ID
-arcanist/.phutil_module_cache
 
 # Python byte-compiled files
 *.pyc
@@ -10,3 +9,7 @@ arcanist/.phutil_module_cache
 
 # Local shared state cache
 /.sstate/
+
+#ignore buck-out
+/buck-out*/
+.buckd/

@@ -25,7 +25,7 @@ LIC_FILES_CHKSUM = "file://gpiod.c;beginline=4;endline=16;md5=5d75ad6348d98a3f7e
 SRC_URI = "file://Makefile \
            file://gpiod.c \
            file://setup-gpiod.sh \
-		       file://run-gpiod.sh \
+           file://run-gpiod.sh \
           "
 
 S = "${WORKDIR}"
@@ -33,9 +33,11 @@ S = "${WORKDIR}"
 binfiles = "gpiod \
            "
 
-CFLAGS += " -lbic -lminipack_gpio -lpal "
+CFLAGS += " -Werror "
+LDFLAGS += " -lbic -lminipack_gpio -lpal -llog "
 
-DEPENDS += " libbic libminipack-gpio libpal "
+DEPENDS += " libbic libminipack-gpio libpal liblog update-rc.d-native"
+RDEPENDS_${PN} += " libbic libminipack-gpio libpal liblog "
 
 pkgdir = "gpiod"
 

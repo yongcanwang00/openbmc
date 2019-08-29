@@ -35,6 +35,8 @@
 #include <openbmc/ipmi.h>
 #include <openbmc/pal.h>
 #include <openbmc/gpio.h>
+#include <openbmc/fruid.h>
+#include <openbmc/obmc-sensor.h>
 #include <facebook/bic.h>
 #include <facebook/fby2_gpio.h>
 #include <facebook/fby2_sensor.h>
@@ -54,6 +56,8 @@
 #define PWR_UTL_LOCK "/var/run/power-util_%d.lock"
 #define POST_FLAG_FILE "/tmp/cache_store/slot%d_post_flag"
 #define SYS_CONFIG_FILE "/mnt/data/kv_store/sys_config/fru%d_*"
+#define SENSORDUMP_BIN "/usr/local/bin/sensordump.sh"
+
 
 #define DEBUG_ME_EJECTOR_LOG 0 // Enable log "GPIO_SLOTX_EJECTOR_LATCH_DETECT_N is 1 and SLOT_12v is ON" before mechanism issue is fixed
 
@@ -64,6 +68,7 @@ static struct timespec last_ejector_ts[MAX_NODES + 1];
 static uint8_t IsLatchOpenStart[MAX_NODES + 1] = {0};
 static void *latch_open_handler(void *ptr);
 static pthread_mutex_t latch_open_mutex[MAX_NODES + 1];
+static uint8_t dev_fru_complete[MAX_NODES + 1][MAX_NUM_DEVS + 1] = {DEV_FRU_NOT_COMPLETE};
 
 char *fru_prsnt_log_string[3 * MAX_NUM_FRUS] = {
   // slot1, slot2, slot3, slot4
@@ -75,6 +80,16 @@ char *fru_prsnt_log_string[3 * MAX_NUM_FRUS] = {
 const static uint8_t gpio_12v[] = { 0, GPIO_P12V_STBY_SLOT1_EN, GPIO_P12V_STBY_SLOT2_EN, GPIO_P12V_STBY_SLOT3_EN, GPIO_P12V_STBY_SLOT4_EN };
 
 const static uint8_t gpio_slot_latch[] = { 0, GPIO_SLOT1_EJECTOR_LATCH_DETECT_N, GPIO_SLOT2_EJECTOR_LATCH_DETECT_N, GPIO_SLOT3_EJECTOR_LATCH_DETECT_N, GPIO_SLOT4_EJECTOR_LATCH_DETECT_N };
+
+const static uint8_t gpv2_dev_nvme_temp[] = { 0, GPV2_SENSOR_DEV0_Temp, GPV2_SENSOR_DEV1_Temp, GPV2_SENSOR_DEV2_Temp, GPV2_SENSOR_DEV3_Temp, GPV2_SENSOR_DEV4_Temp, GPV2_SENSOR_DEV5_Temp,
+                                                 GPV2_SENSOR_DEV6_Temp, GPV2_SENSOR_DEV7_Temp, GPV2_SENSOR_DEV8_Temp, GPV2_SENSOR_DEV9_Temp, GPV2_SENSOR_DEV10_Temp, GPV2_SENSOR_DEV11_Temp};
+
+struct threadinfo {
+  uint8_t is_running;
+  uint8_t fru;
+  pthread_t pt;
+};
+static struct threadinfo t_fru_cache[MAX_NUM_FRUS] = {0, };
 
 typedef struct {
   uint8_t def_val;
@@ -202,14 +217,272 @@ static void log_gpio_change(gpio_poll_st *gp, useconds_t log_delay)
   }
 }
 
+static void
+create_sensordump(void) {
+  system(SENSORDUMP_BIN);
+}
+
+static void *
+hsc_alert_handler(void *arg) {
+  pthread_detach(pthread_self());
+
+  if (fby2_check_hsc_sts_iout(0x20) == 1) {  // bit5: IOUT_OC_WARN
+    syslog(LOG_CRIT, "ASSERT: OC_warning triggered (falling edge detected for SMB_HOTSWAP_ALERT_N)");
+    create_sensordump();
+    sleep(1);
+    fby2_check_hsc_fault();
+  }
+
+  pthread_exit(NULL);
+}
+
+static int
+fruid_cache_init(uint8_t slot_id, uint8_t fru_id) {
+  int ret;
+  int fru_size = 0;
+  char fruid_temp_path[64] = {0};
+  char fruid_path[64] = {0};
+
+  if (fru_id == 0) {
+    sprintf(fruid_temp_path, "/tmp/tfruid_slot%d.bin", slot_id);
+    sprintf(fruid_path, "/tmp/fruid_slot%d.bin", slot_id);
+  } else {
+    sprintf(fruid_temp_path, "/tmp/tfruid_slot%d_dev%d.bin", slot_id, fru_id);
+    sprintf(fruid_path, "/tmp/fruid_slot%d_dev%d.bin", slot_id, fru_id);
+  }
+
+  ret = bic_read_fruid(slot_id, fru_id, fruid_temp_path, &fru_size);
+  if (ret) {
+    syslog(LOG_WARNING, "fruid_cache_init: bic_read_fruid slot%d dev=%d returns %d, fru_size: %d\n", slot_id, fru_id-1, ret, fru_size);
+  }
+
+  rename(fruid_temp_path, fruid_path);
+
+  return ret;
+}
+
+static void *
+fru_cache_dump(void *arg) {
+  uint8_t fru = *(uint8_t *) arg;
+  uint8_t self_test_result[2] = {0};
+  char key[MAX_KEY_LEN];
+  char buf[MAX_VALUE_LEN];
+  int ret;
+  int retry;
+  uint8_t status[MAX_NUM_DEVS+1] = {DEVICE_POWER_OFF};
+  uint8_t type = DEV_TYPE_UNKNOWN;
+  uint8_t nvme_ready = 0;
+  uint8_t all_nvme_ready = 0;
+  uint8_t dev_id;
+  const int max_retry = 3;
+  int oldstate;
+  int finish_count = 0; // fru finish
+  int nvme_ready_count = 0;
+  float value;
+  fruid_info_t fruid;
+
+  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
+  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+  pal_set_nvme_ready(fru,all_nvme_ready);
+  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+
+  // Check BIC Self Test Result
+  do {
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+    ret = bic_get_self_test_result(fru, self_test_result);
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+    if (ret == 0) {
+      syslog(LOG_INFO, "bic_get_self_test_result: %X %X\n", self_test_result[0], self_test_result[1]);
+      break;
+    }
+    sleep(5);
+  } while (ret != 0);
+
+  sleep(2); //wait for BIC poll at least one cycle
+
+  // Get GPV2 devices' FRU
+  for (dev_id = 1; dev_id <= MAX_NUM_DEVS; dev_id++) {
+
+    //check for power status
+    ret = pal_get_dev_info(fru, dev_id, &nvme_ready ,&status[dev_id], &type);
+    syslog(LOG_WARNING, "fru_cache_dump: Slot%u Dev%d power=%u nvme_ready=%u type=%u", fru, dev_id-1, status[dev_id], nvme_ready, type);
+
+    if (dev_fru_complete[fru][dev_id] != DEV_FRU_NOT_COMPLETE) {
+      finish_count++;
+      continue;
+    }
+
+    if (ret == 0) {
+      if (status[dev_id] == DEVICE_POWER_ON) {
+        retry = 0;
+        while (1) {
+          pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+          ret = fruid_cache_init(fru, dev_id);
+          pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+          retry++;
+
+          if ((ret == 0) || (retry == max_retry))
+            break;
+
+          msleep(50);
+        }
+
+        if (retry >= max_retry) {
+          syslog(LOG_WARNING, "fru_cache_dump: Fail on getting Slot%u Dev%d FRU", fru, dev_id-1);
+        } else {
+          pal_get_dev_fruid_path(fru, dev_id, buf);
+          //check file's checksum
+          pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+          ret = fruid_parse(buf, &fruid);
+          if (ret != 0) { // Fail
+            syslog(LOG_WARNING, "fru_cache_dump: Slot%u Dev%d FRU data checksum is invalid", fru, dev_id-1);
+          } else { // Success
+            free_fruid_info(&fruid);
+            dev_fru_complete[fru][dev_id] = DEV_FRU_COMPLETE;
+            finish_count++;
+            syslog(LOG_WARNING, "fru_cache_dump: Finish getting Slot%u Dev%d FRU", fru, dev_id-1);
+          }
+          pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+        }
+      } else { // DEVICE_POWER_OFF
+        finish_count++;
+      }
+
+      sprintf(key, "slot%u_dev%u_pres", fru, dev_id-1);
+      sprintf(buf, "%u", status[dev_id]);
+      pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+      if (kv_set(key, buf, 0, 0) < 0) {
+        syslog(LOG_WARNING, "fru_cache_dump: kv_set Slot%u Dev%d present status failed", fru, dev_id-1);
+      }
+      pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+    } else { // Device Status Unknown
+      finish_count++;
+      syslog(LOG_WARNING, "fru_cache_dump: Fail to access Slot%u Dev%d power status", fru, dev_id-1);
+    }
+  }
+
+  // If NVMe is ready, try to get the FRU which was failed to get and
+  // update the fan speed control table according to the device type
+  do {
+    nvme_ready_count = 0;
+    for (dev_id = 1; dev_id <= MAX_NUM_DEVS; dev_id++) {
+      if (status[dev_id] == DEVICE_POWER_OFF) {// M.2 device is present or not
+        nvme_ready_count++;
+        continue;
+      }
+
+      // check for device type
+      ret = pal_get_dev_info(fru, dev_id, &nvme_ready, &status[dev_id], &type);
+      syslog(LOG_WARNING, "fru_cache_dump: Slot%u Dev%d power=%u nvme_ready=%u type=%u", fru, dev_id-1, status[dev_id], nvme_ready, type);
+
+      if (ret || (!nvme_ready))
+        continue;
+
+      nvme_ready_count++;
+
+      if (dev_fru_complete[fru][dev_id] == DEV_FRU_NOT_COMPLETE) { // try to get fru or not
+        if ((type == DEV_TYPE_VSI_ACC) || (type == DEV_TYPE_BRCM_ACC) || (type == DEV_TYPE_OTHER_ACC)) { // device type has FRU
+          retry = 0;
+          while (1) {
+            pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+            ret = fruid_cache_init(fru, dev_id);
+            pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+            retry++;
+
+            if ((ret == 0) || (retry == max_retry))
+              break;
+
+            msleep(50);
+          }
+
+          if (retry >= max_retry) {
+            syslog(LOG_WARNING, "fru_cache_dump: Fail on getting Slot%u Dev%d FRU", fru, dev_id-1);
+          } else {
+            pal_get_dev_fruid_path(fru, dev_id, buf);
+            // check file's checksum
+            pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+            ret = fruid_parse(buf, &fruid);
+            if (ret != 0) { // Fail
+              syslog(LOG_WARNING, "fru_cache_dump: Slot%u Dev%d FRU data checksum is invalid", fru, dev_id-1);
+            } else { // Success
+              free_fruid_info(&fruid);
+              dev_fru_complete[fru][dev_id] = DEV_FRU_COMPLETE;
+              finish_count++;
+              syslog(LOG_WARNING, "fru_cache_dump: Finish getting Slot%u Dev%d FRU", fru, dev_id-1);
+            }
+            pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+          }
+        } else {
+          dev_fru_complete[fru][dev_id] = DEV_FRU_IGNORE;
+          finish_count++;
+          syslog(LOG_WARNING, "fru_cache_dump: Slot%u Dev%d ignore FRU", fru, dev_id-1);
+        }
+      }
+    }
+
+    if (!all_nvme_ready && (nvme_ready_count == MAX_NUM_DEVS)) {
+      //set nvme is ready
+      all_nvme_ready = 1;
+      pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+      pal_set_nvme_ready(fru,all_nvme_ready);
+      pal_set_nvme_ready_timestamp(fru);
+      pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+      syslog(LOG_WARNING, "fru_cache_dump: Slot%u all devices' NVMe are ready", fru);
+    }
+    sleep(10);
+
+  } while ((finish_count < MAX_NUM_DEVS) || (nvme_ready_count < MAX_NUM_DEVS));
+
+  t_fru_cache[fru-1].is_running = 0;
+  syslog(LOG_INFO, "%s: FRU %d cache is finished.", __func__, fru);
+
+  pthread_detach(pthread_self());
+  pthread_exit(0);
+}
+
+int
+fru_cahe_init(uint8_t fru) {
+  int ret;
+  uint8_t idx;
+
+  if (fru != FRU_SLOT1 && fru != FRU_SLOT3) {
+    return -1;
+  }
+  idx = fru - 1;
+
+  // If yes, kill that thread and start a new one
+  if (t_fru_cache[idx].is_running) {
+    ret = pthread_cancel(t_fru_cache[idx].pt);
+    if (ret == ESRCH) {
+      syslog(LOG_INFO, "%s: No dump FRU cache pthread exists", __func__);
+    } else {
+      pthread_join(t_fru_cache[idx].pt, NULL);
+      syslog(LOG_INFO, "%s: Previous dump FRU cache thread is cancelled", __func__);
+    }
+  }
+
+  // Start a thread to generate the FRU
+  t_fru_cache[idx].fru = fru;
+  if (pthread_create(&t_fru_cache[idx].pt, NULL, fru_cache_dump, (void *)&t_fru_cache[idx].fru) < 0) {
+    syslog(LOG_WARNING, "%s: pthread_create for FRU %d failed", __func__, fru);
+    return -1;
+  }
+  t_fru_cache[idx].is_running = 1;
+  syslog(LOG_INFO, "%s: FRU %d cache is being generated.", __func__, fru);
+
+  return 0;
+}
+
+
 // Generic Event Handler for GPIO changes
 static void gpio_event_handle(gpio_poll_st *gp)
 {
   char cmd[128] = {0};
-  int ret=-1;
   uint8_t slot_id;
+  uint8_t slot_12v = 1;
   int value;
-  int status;
   char vpath[80] = {0};
   char locstr[MAX_VALUE_LEN];
   static bool prsnt_assert[MAX_NODES + 1]={0};
@@ -217,6 +490,7 @@ static void gpio_event_handle(gpio_poll_st *gp)
   static pthread_t latch_open_tid[MAX_NODES + 1];
   hot_service_info hsvc_info[MAX_NODES + 1];
   struct timespec ts;
+  pthread_t hsc_alert_tid;
 
   if (gp->gs.gs_gpio == gpio_num("GPIOH5")) { // GPIO_FAN_LATCH_DETECT
     if (gp->value == 1) { // low to high
@@ -262,8 +536,9 @@ static void gpio_event_handle(gpio_poll_st *gp)
           pthread_cancel(latch_open_tid[slot_id]);
         }
         //Create thread for latch open detect
-        if (pthread_create(&latch_open_tid[slot_id], NULL, latch_open_handler, (void*)&slot_id) < 0) {
-          syslog(LOG_WARNING, "[%s] Create latch_open_handler thread failed for slot%u\n",__func__, slot_id);
+        value = slot_id;
+        if (pthread_create(&latch_open_tid[slot_id], NULL, latch_open_handler, (void *)value) < 0) {
+          syslog(LOG_WARNING, "[%s] Create latch_open_handler thread failed for slot%u", __func__, slot_id);
           pthread_mutex_unlock(&latch_open_mutex[slot_id]);
           return;
         }
@@ -311,11 +586,11 @@ static void gpio_event_handle(gpio_poll_st *gp)
             pthread_cancel(hsvc_action_tid[slot_id]);
           }
 
-          if ( IsLatchOpenStart[hsvc_info->slot_id] ){
-            pthread_cancel(latch_open_tid[hsvc_info->slot_id]);
-            pthread_mutex_lock(&latch_open_mutex[hsvc_info->slot_id]);
-            IsLatchOpenStart[hsvc_info->slot_id] = false;
-            pthread_mutex_unlock(&latch_open_mutex[hsvc_info->slot_id]);
+          if (IsLatchOpenStart[slot_id]) {
+            pthread_cancel(latch_open_tid[slot_id]);
+            pthread_mutex_lock(&latch_open_mutex[slot_id]);
+            IsLatchOpenStart[slot_id] = false;
+            pthread_mutex_unlock(&latch_open_mutex[slot_id]);
           }
 
           //Create thread for hsvc event detect
@@ -351,7 +626,7 @@ static void gpio_event_handle(gpio_poll_st *gp)
        }
     }
   } // End of GPIO_SLOT1/2/3/4_PRSNT_B_N, GPIO_SLOT1/2/3/4_PRSNT_N
-  else if (gp->gs.gs_gpio == gpio_num("GPIOO3")) {
+  else if (gp->gs.gs_gpio == gpio_num("GPIOO3") || gp->gs.gs_gpio == gpio_num("GPIOG7")) {
     if (pal_get_hand_sw(&slot_id)) {
       slot_id = HAND_SW_BMC;
     }
@@ -366,31 +641,51 @@ static void gpio_event_handle(gpio_poll_st *gp)
           ) // SLOT1/2/3/4_POWER_EN
   {
     slot_id = (gp->gs.gs_gpio - GPIO_SLOT1_POWER_EN) + 1;
-    // high to low
-    fby2_common_set_ierr(slot_id,false);
+    if (gp->value == 1) { // low to high
+      syslog(LOG_WARNING, "[%s] slot%d power enable pin on", __func__,slot_id);
+#if defined(CONFIG_FBY2_GPV2)
+      if (fby2_get_slot_type(slot_id) == SLOT_TYPE_GPV2) {
+        if (pal_is_server_12v_on(slot_id, &slot_12v))
+          syslog(LOG_WARNING, "%s : pal_is_server_12v_on failed for slot: %u", __func__, slot_id);
+        if (slot_12v)
+          fru_cahe_init(slot_id);
+      }
+#endif
+    } else { // high to low
+      syslog(LOG_WARNING, "[%s] slot%d power enable pin off", __func__,slot_id);
+      fby2_common_set_ierr(slot_id,false);
+    }
+  }
+  else if (gp->gs.gs_gpio == gpio_num("GPION7")) {
+    if (gp->value == 0) {
+      if (pthread_create(&hsc_alert_tid, NULL, hsc_alert_handler, NULL)) {
+        syslog(LOG_WARNING, "[%s] Create hsc_alert_handler thread failed", __func__);
+      }
+    }
   }
 }
 
 static void *
 latch_open_handler(void *ptr) {
-  uint8_t slot_id = *(uint8_t *) ptr;
+  uint8_t slot_id = (int)ptr;
   uint8_t pair_slot_id;
+  uint8_t slot_12v = 1;
   int ret;
-  uint8_t value;
+  int value;
   char path_slot[128];
   char path_pair_slot[128];
   int pair_set_type;
   char vpath[80] = {0};
+
   pthread_detach(pthread_self());
   pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
   pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-
-  sleep(2);
 
   pair_set_type = pal_get_pair_slot_type(slot_id);
   switch(pair_set_type) {
     case TYPE_CF_A_SV:
     case TYPE_GP_A_SV:
+    case TYPE_GPV2_A_SV:
       if (0 == slot_id%2)
         pair_slot_id = slot_id - 1;
       else
@@ -416,10 +711,10 @@ latch_open_handler(void *ptr) {
       break;
   }
 
-  ret = pal_is_server_12v_on(slot_id, &value);
+  ret = pal_is_server_12v_on(slot_id, &slot_12v);
   if (ret < 0)
     syslog(LOG_WARNING, "%s : pal_is_server_12v_on failed for slot: %u", __func__, slot_id);
-  if (value) {
+  if (slot_12v) {
     sprintf(vpath, GPIO_VAL, GPIO_FAN_LATCH_DETECT);
     read_device(vpath, &value);
 
@@ -450,14 +745,12 @@ hsvc_event_handler(void *ptr) {
   char sys_config_path[80] = {0};
   char cmd[128] = {0};
   char slotrcpath[80] = {0};
-  char hslotpid[80] = {0};
   char slot_kv[80] = {0};
   int i = 0, slot_type;
   uint8_t server_type;
   char event_log[80] = {0};
   hot_service_info *hsvc_info = (hot_service_info *)ptr;
   pthread_detach(pthread_self());
-
 
   switch(hsvc_info->action)
   {
@@ -503,6 +796,18 @@ hsvc_event_handler(void *ptr) {
             syslog(LOG_WARNING, "%s pal_set_def_key_value: kv_set failed. %d", __func__, ret);
           }
         }
+
+        // resart sensord
+        sprintf(cmd, "sv stop sensord");
+        system(cmd);
+        sprintf(cmd, "rm -rf /tmp/cache_store/slot%d*", hsvc_info->slot_id);
+        system(cmd);
+        sprintf(cmd, "sv start sensord");
+        system(cmd);
+
+        // Remove FRU when board has been removed
+        sprintf(cmd, "rm -rf /tmp/fruid_slot%d*", hsvc_info->slot_id);
+        system(cmd);
 
         // Remove post flag file when board has been removed
         sprintf(postpath, POST_FLAG_FILE, hsvc_info->slot_id);
@@ -572,12 +877,10 @@ hsvc_event_handler(void *ptr) {
           sprintf(slotrcpath, SV_TYPE_RECORD_FILE, hsvc_info->slot_id);
           sprintf(cmd, "echo %d > %s", server_type, slotrcpath);
           system(cmd);
+        } else if (slot_type == SLOT_TYPE_GPV2) {
+          for (i=1; i<=MAX_NUM_DEVS; i++)
+            dev_fru_complete[hsvc_info->slot_id][i] = DEV_FRU_NOT_COMPLETE;
         }
-
-        // Remove pid_file
-        memset(cmd, 0, sizeof(cmd));
-        sprintf(cmd,"rm -f %s",hslotpid);
-        system(cmd);
 
         /* Check whether the system is 12V off or on */
         ret = pal_is_server_12v_on(hsvc_info->slot_id, &status);
@@ -603,6 +906,7 @@ hsvc_event_handler(void *ptr) {
   pthread_exit(0);
 }
 
+// YV2
 static gpio_poll_st g_gpios[] = {
   // {{gpio, fd}, edge, gpioValue, call-back function, GPIO description}
   {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOH5",  "GPIO_FAN_LATCH_DETECT"},
@@ -619,13 +923,40 @@ static gpio_poll_st g_gpios[] = {
   {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOAA2", "GPIO_SLOT3_PRSNT_N"},
   {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOAA3", "GPIO_SLOT4_PRSNT_N"},
   {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPIOO3",  "GPIO_UART_SEL"},
-  {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPIOI0",  "GPIO_SLOT1_POWER_EN"},
-  {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPIOI1",  "GPIO_SLOT2_POWER_EN"},
-  {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPIOI2",  "GPIO_SLOT3_POWER_EN"},
-  {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPIOI3",  "GPIO_SLOT4_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI0",  "GPIO_SLOT1_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI1",  "GPIO_SLOT2_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI2",  "GPIO_SLOT3_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI3",  "GPIO_SLOT4_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPION7",  "GPIO_SMB_HOTSWAP_ALERT_N"},
 };
 
+// YV2.50
+static gpio_poll_st g_gpios_yv250[] = {
+  // {{gpio, fd}, edge, gpioValue, call-back function, GPIO description}
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOH5",  "GPIO_FAN_LATCH_DETECT"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOP0",  "GPIO_SLOT1_EJECTOR_LATCH_DETECT_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOP1",  "GPIO_SLOT2_EJECTOR_LATCH_DETECT_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOP2",  "GPIO_SLOT3_EJECTOR_LATCH_DETECT_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOP3",  "GPIO_SLOT4_EJECTOR_LATCH_DETECT_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOZ0",  "GPIO_SLOT1_PRSNT_B_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOZ1",  "GPIO_SLOT2_PRSNT_B_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOZ2",  "GPIO_SLOT3_PRSNT_B_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOZ3",  "GPIO_SLOT4_PRSNT_B_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOAA0", "GPIO_SLOT1_PRSNT_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOAA1", "GPIO_SLOT2_PRSNT_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOAA2", "GPIO_SLOT3_PRSNT_N"},
+  {{0, 0}, GPIO_EDGE_BOTH,    0, gpio_event_handle, "GPIOAA3", "GPIO_SLOT4_PRSNT_N"},
+  {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPIOG7",  "GPIO_YV2_USB_OCP_UART_SWITCH_N"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI0",  "GPIO_SLOT1_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI1",  "GPIO_SLOT2_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI2",  "GPIO_SLOT3_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_BOTH, 0, gpio_event_handle, "GPIOI3",  "GPIO_SLOT4_POWER_EN"},
+  {{0, 0}, GPIO_EDGE_FALLING, 0, gpio_event_handle, "GPION7",  "GPIO_SMB_HOTSWAP_ALERT_N"},
+};
+
+
 static int g_count = sizeof(g_gpios) / sizeof(gpio_poll_st);
+static int g_count_yv250 = sizeof(g_gpios_yv250) / sizeof(gpio_poll_st);
 
 static def_chk_info def_gpio_chk[] = {
   // { default value, gpio name, gpio num, log }
@@ -637,6 +968,8 @@ static def_chk_info def_gpio_chk[] = {
 #endif
   { 0, "GPIO_FAN_LATCH_DETECT",             GPIO_FAN_LATCH_DETECT,             "ASSERT: SLED is not seated"                                    },
 };
+
+const static int power_enable[] = { 0, GPIO_SLOT1_POWER_EN,  GPIO_SLOT2_POWER_EN,  GPIO_SLOT3_POWER_EN,  GPIO_SLOT4_POWER_EN };
 
 static void slot_latch_check(void) {
   int slot_id;
@@ -704,6 +1037,17 @@ static void default_gpio_check(void) {
       syslog(LOG_CRIT, def_gpio_chk[i].log);
     }
   }
+#if defined(CONFIG_FBY2_GPV2)
+  for (i=FRU_SLOT1; i<=FRU_SLOT4; i+=2) {
+    if (fby2_get_slot_type(i) == SLOT_TYPE_GPV2) {
+      sprintf(vpath, GPIO_VAL, power_enable[i]);
+      read_device(vpath, &value);
+      if (value) {
+        fru_cahe_init(i);
+      }
+    }
+  }
+#endif
 }
 
 int
@@ -711,6 +1055,7 @@ main(int argc, void **argv) {
   int dev, rc, pid_file;
   uint8_t status = 0;
   int i;
+  int spb_type;
 
   for(i=1 ;i<MAX_NODES + 1; i++)
   {
@@ -723,6 +1068,7 @@ main(int argc, void **argv) {
 
   slot_latch_check();
 
+  spb_type = fby2_common_get_spb_type();
   pid_file = open("/var/run/gpiointrd.pid", O_CREAT | O_RDWR, 0666);
   rc = flock(pid_file, LOCK_EX | LOCK_NB);
   if(rc) {
@@ -734,9 +1080,15 @@ main(int argc, void **argv) {
     openlog("gpiointrd", LOG_CONS, LOG_DAEMON);
     syslog(LOG_INFO, "gpiointrd: daemon started");
 
-    gpio_poll_open(g_gpios, g_count);
-    gpio_poll(g_gpios, g_count, POLL_TIMEOUT);
-    gpio_poll_close(g_gpios, g_count);
+    if (spb_type == TYPE_SPB_YV250) {
+      gpio_poll_open(g_gpios_yv250, g_count_yv250);
+      gpio_poll(g_gpios_yv250, g_count_yv250, POLL_TIMEOUT);
+      gpio_poll_close(g_gpios_yv250, g_count_yv250);
+    } else {
+      gpio_poll_open(g_gpios, g_count);
+      gpio_poll(g_gpios, g_count, POLL_TIMEOUT);
+      gpio_poll_close(g_gpios, g_count);
+    }
   }
 
   for(i=1; i<MAX_NODES + 1; i++)

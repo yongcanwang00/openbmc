@@ -1,3 +1,23 @@
+#!/usr/bin/env python
+#
+# Copyright 2018-present Facebook. All Rights Reserved.
+#
+# This program file is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; version 2 of the License.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program in a file named COPYING; if not, write to the
+# Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301 USA
+#
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -7,6 +27,7 @@ import argparse
 import sys
 import logging
 import os
+import subprocess
 try:
     currentPath = os.getcwd()
     testPath = currentPath[0:currentPath.index('common')]
@@ -38,6 +59,11 @@ try:
 except Exception:
     pass
 try:
+    sys.path.insert(0, testPath + 'fby2/unittests/')
+    import Fby2Util
+except Exception:
+    pass
+try:
     sys.path.insert(0, testPath + 'fbttn/unittests/')
     import FbttnUtil
 except Exception as e:
@@ -47,11 +73,16 @@ try:
     import LightningUtil
 except Exception as e:
     pass
+try:
+    sys.path.insert(0, testPath + 'minipack/unittests/')
+    import MinipackUtil
+except Exception as e:
+    pass
 
 
 class UnitTestUtil:
     """
-    SensorData supports wedge, wedge100, cmm, galaxy100, fbttn, and fbtp
+    SensorData supports wedge, wedge100, cmm, galaxy100, fbttn, fby2, and fbtp
     """
 
     def importUtil(self, platformType):
@@ -65,10 +96,14 @@ class UnitTestUtil:
             return Galaxy100Util.Galaxy100Util()
         elif platformType == 'fbtp':
             return FbtpUtil.FbtpUtil()
+        elif platformType == 'fby2':
+            return Fby2Util.Fby2Util()
         elif platformType == 'fbttn':
             return FbttnUtil.FbttnUtil()
         elif platformType == 'lightning':
             return LightningUtil.LightningUtil()
+        elif platformType == 'minipack':
+            return MinipackUtil.MinipackUtil()
         else:
             raise Exception("Unsupported Platform")
 
@@ -80,11 +115,18 @@ class UnitTestUtil:
             data = json.load(data_file)
         return data
 
-    def Argparser(self, names, platformTypes, helps):
+    def Argparser(self, names, platformTypes, helps, optional=None):
         parser = argparse.ArgumentParser()
         for i in range(len(names)):
             if platformTypes[i] is None:
                 parser.add_argument(names[i], help=helps[i])
+            elif optional and optional[i]:
+                parser.add_argument(
+                    names[i],
+                    metavar=names[i],
+                    type=platformTypes[i],
+                    help=helps[i],
+                    nargs='?')
             else:
                 parser.add_argument(
                     names[i],
@@ -109,12 +151,13 @@ class UnitTestUtil:
         """
         dest = 'root@[' + hostname + ']:/tmp'
         password = '0penBmc'
+        possible_expects = ['password:', pexpect.EOF]
         if Multiple:
             child = pexpect.spawn('scp -r ' + path + ' ' + dest)
         else:
             child = pexpect.spawn('scp ' + path + ' ' + dest)
-        auth = child.expect(['password:', pexpect.EOF])
-        if not auth:
+        rc = child.expect(possible_expects, timeout=120)
+        if rc == 0: # asked for password
             child.sendline(password)
             child.expect(pexpect.EOF)
         child.close()
@@ -158,3 +201,15 @@ class UnitTestUtil:
         ch.setFormatter(formatter)
         root.addHandler(ch)
         return root
+
+    def run_shell_cmd(self, cmd):
+        """Run the supplied command.
+        """
+        proc = subprocess.Popen(cmd,
+                                shell=True,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        out, err = proc.communicate()
+        if len(err) != 0:
+            raise Exception(err)
+        return out

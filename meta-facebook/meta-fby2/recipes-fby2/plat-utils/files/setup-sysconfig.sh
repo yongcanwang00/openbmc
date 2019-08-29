@@ -5,7 +5,7 @@ echo -n "Setup System Configuration .."
 
 . /usr/local/fbpackages/utils/ast-functions
 
-SPB_REV=$(($(($(($(gpio_get_val Y2) + $(gpio_get_val Y1))) * 2)) + $(gpio_get_val Y0)))
+SPB_REV=$(($(($(($(gpio_get_val Y2) * 4)) + $(($(gpio_get_val Y1) * 2)))) + $(gpio_get_val Y0)))
 echo $SPB_REV > /tmp/spb_rev
 
 if [ $(is_server_prsnt 2) == "1" ] ; then
@@ -67,7 +67,7 @@ fi
 
 # create devices on I2C bus 1 and bus 5
 # Bus1,  Glacier Point
-if [[ $(is_server_prsnt 1) == "1" && $(get_slot_type 1) != "0" ]]; then
+if [[ $(is_server_prsnt 1) == "1" && $(get_slot_type 1) != "0" && $(get_slot_type 1) != "4" ]]; then
 
    devmem 0x1e78a084 w 0xFFF77304
 
@@ -91,7 +91,7 @@ else
 fi
 
 # Bus5,  Glacier Point
-if [[ $(is_server_prsnt 3) == "1" && $(get_slot_type 3) != "0" ]]; then
+if [[ $(is_server_prsnt 3) == "1" && $(get_slot_type 3) != "0" && $(get_slot_type 3) != "4" ]]; then
 
    devmem 0x1e78a184 w 0xFFF77304
 

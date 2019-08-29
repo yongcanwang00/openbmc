@@ -20,7 +20,9 @@
 
 from ctypes import *
 
+
 lpal_hndl = CDLL("libpal.so")
+
 
 def pal_get_fru_list():
     frulist = create_string_buffer(128)
@@ -30,5 +32,18 @@ def pal_get_fru_list():
     else:
         return frulist.value
 
+
 def pal_log_clear(fru):
-    lpal_hndl.pal_log_clear(fru.encode('ascii'))
+    lpal_hndl.pal_log_clear(fru.encode("ascii"))
+
+
+def pal_get_pair_fru(fru):
+    if lpal_hndl is None:
+        return 0
+    pair_fru = c_ubyte()
+    p_pair_fru = pointer(pair_fru)
+    ret = lpal_hndl.pal_get_pair_fru(fru, p_pair_fru)
+    if ret:
+        return pair_fru.value
+    else:
+        return None

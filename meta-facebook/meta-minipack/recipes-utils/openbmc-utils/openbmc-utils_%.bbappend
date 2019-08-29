@@ -23,22 +23,28 @@ SRC_URI += "file://board-utils.sh \
             file://eth0_mac_fixup.sh \
             file://fcmcpld_update.sh \
             file://fpga_ver.sh \
-            file://peutil \
             file://pdbcpld_update.sh \
+            file://peutil \
             file://pimcpld_update.sh \
             file://power-on.sh \
             file://presence_util.sh \
             file://reset_brcm.sh \
             file://scmcpld_update.sh \
             file://set_pim_sensor.sh \
+            file://dump_pim_serials.sh \
+            file://set_sled.sh \
             file://setup_board.sh \
+            file://setup_emmc.sh \
             file://setup_i2c.sh \
             file://setup_mgmt.sh \
+            file://setup_pcie_repeater.sh \
+            file://setup_qsfp.sh \
             file://seutil \
             file://smbcpld_update.sh \
             file://sol.sh \
             file://spi_util.sh \
             file://us_console.sh \
+            file://reset_cp2112.sh \
             file://wedge_power.sh \
             file://wedge_us_mac.sh \
            "
@@ -56,12 +62,17 @@ OPENBMC_UTILS_FILES += " \
     reset_brcm.sh \
     scmcpld_update.sh \
     set_pim_sensor.sh \
+    dump_pim_serials.sh \
+    set_sled.sh \
     setup_mgmt.sh \
+    setup_pcie_repeater.sh \
+    setup_qsfp.sh \
     seutil \
     smbcpld_update.sh \
     sol.sh \
-    us_console.sh \
     spi_util.sh \
+    us_console.sh \
+    reset_cp2112.sh \
     wedge_power.sh \
     wedge_us_mac.sh \
     "
@@ -83,6 +94,10 @@ do_install_board() {
     install -m 0755 ${WORKDIR}/rc.early ${D}${sysconfdir}/init.d/rc.early
     update-rc.d -r ${D} rc.early start 04 S .
 
+    # the script to setup EMMC
+    install -m 0755 ${WORKDIR}/setup_emmc.sh ${D}${sysconfdir}/init.d/setup_emmc.sh
+    update-rc.d -r ${D} setup_emmc.sh start 05 S .
+
     install -m 755 setup_i2c.sh ${D}${sysconfdir}/init.d/setup_i2c.sh
     update-rc.d -r ${D} setup_i2c.sh start 60 S .
 
@@ -102,6 +117,7 @@ do_install_board() {
 
     install -m 0755 ${WORKDIR}/disable_watchdog.sh ${D}${sysconfdir}/init.d/disable_watchdog.sh
     update-rc.d -r ${D} disable_watchdog.sh start 99 2 3 4 5 .
+
 }
 
 do_install_append() {

@@ -18,41 +18,54 @@
 # Boston, MA 02110-1301 USA
 #
 
+. /usr/local/bin/openbmc-utils.sh
+exitCode=0
+
+dump_fpga_version() {
+    local fpga_dir=$1
+    local fpga_name=$2
+
+    fpga_ver=`head -n 1 ${fpga_dir}/fpga_ver 2> /dev/null`
+    if [ $? -ne 0 ]; then
+        echo "${fpga_name} is not detected"
+        exit 1
+
+    fi
+    fpga_sub_ver=`head -n 1 ${fpga_dir}/fpga_sub_ver 2> /dev/null`
+    if [ $? -ne 0 ]; then
+        echo "${fpga_name} is not detected"
+        exit 1
+    fi
+
+    echo "${fpga_name}: $(($fpga_ver)).$(($fpga_sub_ver))"
+}
 
 echo "------IOBFPGA------"
-iob=`i2cdetect -y 13 0x35 0x35 | grep "\-\-"` > /dev/null
-
-if [ "${iob}" != "" ]; then
-    echo "IOBFPGA is not detected"
-else
-    iob_ver=$(i2cget -f -y 13 0x35 0x01)
-    iob_sub_ver=$(i2cget -f -y 13 0x35 0x02)
-    echo "IOBFPGA: $(($iob_ver)).$(($iob_sub_ver))"
-fi
-
-num=1
-BUS="80 88 96 104 112 120 128 136"
+dump_fpga_version ${IOBFPGA_SYSFS_DIR} "IOBFPGA"
 
 echo "------DOMFPGA------"
-
-for bus in ${BUS}; do
-    pim_16q=`i2cdetect -y $bus 0x60 0x60 | grep "\-\-"` > /dev/null
-    pim_4dd=`i2cdetect -y $bus 0x61 0x61 | grep "\-\-"` > /dev/null
+for num in $(seq 8); do
+    pim_var_name="PIM${num}_DOMFPGA_SYSFS_DIR"
+    pim_fpga_dir=${!pim_var_name}
 
     echo "PIM $num:"
 
-    if [ "${pim_16q}" != "" ] && [ "${pim_4dd}" != "" ]; then
-        echo "DOMFPGA is not detected or PIM $num is not inserted"
-    elif [ "${pim_16q}" == "" ] && [ "${pim_4dd}" != "" ]; then
-        dom_16q_ver=$(i2cget -f -y ${bus} 0x60 0x01)
-        dom_16q_sub_ver=$(i2cget -f -y ${bus} 0x60 0x02)
-        echo "16Q DOMFPGA: $(($dom_16q_ver)).$(($dom_16q_sub_ver))"
+    pim_type=`head -n1 ${pim_fpga_dir}/board_ver 2> /dev/null`
+    if [ "${pim_type}" == "0x0" ]; then
+        dump_fpga_version ${pim_fpga_dir} "16Q DOMFPGA"
+    elif [ "$((pim_type & 0xf0))" == "$((0xf0))" ]; then
+        dump_fpga_version ${pim_fpga_dir} "16O DOMFPGA"
+    elif [ "${pim_type}" == "0x10" ]; then
+        dump_fpga_version ${pim_fpga_dir} "4DD DOMFPGA"
     else
-        dom_4dd_ver=$(i2cget -f -y ${bus} 0x61 0x01)
-        dom_4dd_sub_ver=$(i2cget -f -y ${bus} 0x61 0x02)
-        echo "4DD DOMFPGA: $(($dom_4dd_ver)).$(($dom_4dd_sub_ver))"
+        echo "DOMFPGA is not detected or PIM $num is not inserted"
+        exitCode=1
     fi
-
-    num=$(($num+1))
     usleep 50000
 done
+
+if [ "$exitCode" -ne 0 ]; then
+    echo "Not all DOMFPGA or PIM were detected/inserted. Please review the logs above.... exiting"
+    exit 1
+fi
+

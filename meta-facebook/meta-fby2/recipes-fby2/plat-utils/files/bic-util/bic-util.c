@@ -26,10 +26,12 @@
 #include <syslog.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <ctype.h>
 #include <facebook/bic.h>
 #include <facebook/fby2_gpio.h>
 #include <facebook/fby2_sensor.h>
 #include <openbmc/ipmi.h>
+#include <openbmc/pal.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -53,7 +55,11 @@ enum cmd_profile_type {
 long double cmd_profile[NUM_SLOTS][CMD_PROFILE_NUM]={0};
 
 static const char *option_list[] = {
+  "--check_status",
   "--get_dev_id",
+#if defined(CONFIG_FBY2_GPV2)
+  "--read_jtag_id [dev]",
+#endif
   "--get_gpio",
   "--set_gpio [gpio] [val]",
   "--get_gpio_config",
@@ -64,6 +70,8 @@ static const char *option_list[] = {
   "--get_sdr",
   "--read_sensor",
   "--perf_test [loop_count]  (0 to run forever)",
+  "--reset",
+  "--clear_cmos",
   "--file [path]"
 };
 
@@ -78,17 +86,49 @@ print_usage_help(void) {
     printf("       %s\n", option_list[i]);
 }
 
+// Check BIC status
+static int
+util_check_status(uint8_t slot_id) {
+  int ret = 0;
+
+  // BIC status is only valid if 12V-on. check this first
+  if (!bic_is_slot_12v_on(slot_id)) {
+    uint8_t status;
+    ret = pal_is_fru_prsnt(slot_id, &status);
+
+    if (ret < 0) {
+       printf("unable to check BIC status\n");
+       return ret;
+    }
+
+    if (status == 0) {
+      printf("Slot is empty, unable to check BIC status\n");
+    } else {
+      printf("Slot is 12V-off, unable to check BIC status\n");
+    }
+    ret = 0;
+  } else {
+    if (is_bic_ready(slot_id)) {
+      printf("BIC status ok\n");
+      ret = 0;
+    } else {
+      printf("Error: BIC not ready\n");
+      ret = -1;
+    }
+  }
+  return ret;
+}
 
 // Test to Get device ID
-static void
+static int
 util_get_device_id(uint8_t slot_id) {
-  int ret;
+  int ret = 0;
   ipmi_dev_id_t id = {0};
 
   ret = bic_get_dev_id(slot_id, &id);
   if (ret) {
     printf("util_get_device_id: bic_get_dev_id returns %d\n", ret);
-    return;
+    return ret;
   }
 
   // Print response
@@ -100,137 +140,196 @@ util_get_device_id(uint8_t slot_id) {
   printf("Manufacturer ID: 0x%X:0x%X:0x%X\n", id.mfg_id[2], id.mfg_id[1], id.mfg_id[0]);
   printf("Product ID: 0x%X:0x%X\n", id.prod_id[1], id.prod_id[0]);
   printf("Aux. FW Rev: 0x%X:0x%X:0x%X:0x%X\n", id.aux_fw_rev[0], id.aux_fw_rev[1],id.aux_fw_rev[2],id.aux_fw_rev[3]);
+
+  return ret;
+}
+
+static int
+util_read_jtag_id(uint8_t slot_id, uint8_t dev_id) {
+  int ret = 0;
+  uint8_t idcode[16] = {0};
+
+  ret = bic_send_jtag_instruction(slot_id, dev_id, idcode, 0x06);  // read IDCODE
+  if (ret) {
+    printf("util_get_device_id: bic_send_jtag_instruction returns %d\n", ret);
+    return ret;
+  }
+  printf("IDCODE: 0x%02X%02X%02X%02X\n", idcode[6], idcode[5], idcode[4], idcode[3]);
+
+  return ret;
 }
 
 
+#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP) || defined(CONFIG_FBY2_GPV2) || defined(CONFIG_FBY2_ND)
+static int
+_get_gpio_cnt_name(uint8_t slot_id, uint8_t *gpio_cnt, char ***gpio_name) {
+  int ret = 0;
+  uint8_t server_type = 0xFF;
+  uint8_t slot_type = 0x3;
+
+  slot_type = fby2_get_slot_type(slot_id);
+
+  if (slot_type == SLOT_TYPE_SERVER) {
+    ret = fby2_get_server_type(slot_id, &server_type);
+    if (ret < 0) {
+      printf("Cannot get server type. 0x%x\n", server_type);
+      return -1;
+    }
+
+    // Choose corresponding GPIO list based on server type
+    switch (server_type) {
+      case SERVER_TYPE_TL:
+        *gpio_cnt = gpio_pin_cnt;
+        *gpio_name = (char **)gpio_pin_name;
+        break;
+      case SERVER_TYPE_RC:
+        *gpio_cnt = rc_gpio_pin_cnt;
+        *gpio_name = (char **)rc_gpio_pin_name;
+        break;
+      case SERVER_TYPE_EP:
+        *gpio_cnt = ep_gpio_pin_cnt;
+        *gpio_name = (char **)ep_gpio_pin_name;
+        break;
+      case SERVER_TYPE_ND:
+        *gpio_cnt = nd_gpio_pin_cnt;
+        *gpio_name = (char **)nd_gpio_pin_name;
+        break;
+      default:
+        printf("Cannot find corresponding server type. 0x%x\n", server_type);
+        return -1;
+    }
+
+    return ret;
+  } else if (slot_type == SLOT_TYPE_GPV2) {
+    *gpio_cnt = gpv2_gpio_pin_cnt;
+    *gpio_name = (char **)gpv2_gpio_pin_name;
+    return 0;
+  } else {
+    return -1;
+  }
+}
+#endif
+
 // Tests for reading GPIO values and configuration
-static void
+static int
 util_get_gpio(uint8_t slot_id) {
-  int ret;
-  uint8_t i, group, shift, gpio[8] = {0};
-#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP)
-  uint8_t server_type = 0xFF, gpio_cnt;
+  int ret = 0;
+  uint8_t i;
+  bic_gpio_t gpio = {0};
+#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP) || defined(CONFIG_FBY2_GPV2) || defined(CONFIG_FBY2_ND)
+  uint8_t gpio_cnt;
   char **gpio_name;
 
-  ret = fby2_get_server_type(slot_id, &server_type);
-  if (ret < 0) {
-    printf("Cannot get server type. 0x%x\n", server_type);
-    return ;
+  ret = _get_gpio_cnt_name(slot_id, &gpio_cnt, &gpio_name);
+  if (ret) {
+    printf("util_get_gpio: _get_gpio_cnt_name returns %d\n", ret);
+    return ret;
   }
 
   // Get GPIO value
-  ret = bic_get_gpio_raw(slot_id, gpio);
+  ret = bic_get_gpio(slot_id, &gpio);
   if (ret) {
     printf("util_get_gpio: bic_get_gpio returns %d\n", ret);
-    return;
-  }
-
-  // Choose corresponding GPIO list based on server type
-  switch (server_type) {
-  case SERVER_TYPE_TL:
-    gpio_cnt = gpio_pin_cnt;
-    gpio_name = (char **)gpio_pin_name;
-    break;
-  case SERVER_TYPE_RC:
-    gpio_cnt = rc_gpio_pin_cnt;
-    gpio_name = (char **)rc_gpio_pin_name;
-    break;
-  case SERVER_TYPE_EP:
-    gpio_cnt = ep_gpio_pin_cnt;
-    gpio_name = (char **)ep_gpio_pin_name;
-    break;
-  default:
-    printf("Cannot find corresponding server type. 0x%x\n", server_type);
-    return ;
+    return ret;
   }
 
   // Print the gpio index, name and value
   for (i = 0; i < gpio_cnt; i++) {
-    group = i/8;
-    shift = i%8;
-    printf("%d %s: %d\n",i , gpio_name[i], (gpio[group] >> shift) & 0x01);
+    printf("%d %s: %d\n",i , gpio_name[i], (int)((gpio.gpio >> i) & 0x01));
   }
 
 #else
-  ret = bic_get_gpio_raw(slot_id, gpio);
+  ret = bic_get_gpio(slot_id, &gpio);
   if (ret) {
     printf("util_get_gpio: bic_get_gpio returns %d\n", ret);
-    return;
+    return ret;
   }
 
   // Print the gpio index, name and value
   for (i = 0; i < gpio_pin_cnt; i++) {
-    group = i/8;
-    shift = i%8;
-    printf("%d %s: %d\n",i , gpio_pin_name[i], (gpio[group] >> shift) & 0x01);
+    printf("%d %s: %d\n",i , gpio_pin_name[i], (int)((gpio.gpio >> i) & 0x01));
   }
 #endif
+  return ret;
 }
 
 
 // Tests utility for setting GPIO values
-static void
+static int
 util_set_gpio(uint8_t slot_id, uint8_t gpio, uint8_t value) {
-  int ret;
+  uint8_t gpio_cnt = gpio_pin_cnt;
+  int ret = 0;
+#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP) || defined(CONFIG_FBY2_GPV2) || defined(CONFIG_FBY2_ND)
+  char **gpio_name;
+
+  ret = _get_gpio_cnt_name(slot_id, &gpio_cnt, &gpio_name);
+  if (ret) {
+    printf("ERROR: _get_gpio_cnt_name returns %d\n", ret);
+    return ret;
+  }
+#endif
+
+  if (gpio >= gpio_cnt) {
+    printf("slot %d: invalid GPIO pin number %d\n", slot_id, gpio);
+    return -1;
+  }
 
   printf("slot %d: setting GPIO %d to %d\n", slot_id, gpio, value);
+#if defined(CONFIG_FBY2_GPV2)
+  if (fby2_get_slot_type(slot_id) == SLOT_TYPE_GPV2) {
+    ret = bic_set_gpio64(slot_id, gpio, value);
+    if (ret) {
+      printf("ERROR: bic_get_gpio returns %d\n", ret);
+    }
+    return ret;
+  }
+#endif
   ret = bic_set_gpio(slot_id, gpio, value);
   if (ret) {
     printf("ERROR: bic_get_gpio returns %d\n", ret);
-    return;
   }
+  return ret;
 }
 
-static void
+static int
 util_get_gpio_config(uint8_t slot_id) {
-  int ret;
+  int ret = 0;
   int i;
   bic_gpio_config_t gpio_config = {0};
-  bic_gpio_config_u *t = (bic_gpio_config_u *) &gpio_config;
-
-#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP)
-  uint8_t server_type = 0xFF, gpio_cnt = 0xFF;
+#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP) || defined(CONFIG_FBY2_GPV2) || defined(CONFIG_FBY2_ND)
+  uint8_t gpio_cnt;
   char **gpio_name;
-  ret = fby2_get_server_type(slot_id, &server_type);
-  if (ret < 0) {
-    printf("Cannot get server type. 0x%x\n", server_type);
-    return ;
-  }
 
-  switch(server_type) {
-  case SERVER_TYPE_TL:
-    gpio_cnt = gpio_pin_cnt;
-    gpio_name = (char **)gpio_pin_name;
-    break;
-  case SERVER_TYPE_RC:
-    gpio_cnt = rc_gpio_pin_cnt;
-    gpio_name = (char **)rc_gpio_pin_name;
-    break;
-  case SERVER_TYPE_EP:
-    gpio_cnt = ep_gpio_pin_cnt;
-    gpio_name = (char **)ep_gpio_pin_name;
-    break;
-  default:
-    printf("Cannot find corresponding server type. 0x%x\n", server_type);
-    return ;
+  ret = _get_gpio_cnt_name(slot_id, &gpio_cnt, &gpio_name);
+  if (ret) {
+    printf("ERROR: _get_gpio_cnt_name returns %d\n", ret);
+    return ret;
   }
 
   // Read configuration of all bits
   for (i = 0;  i < gpio_cnt; i++) {
+#if defined(CONFIG_FBY2_GPV2)
+    if (fby2_get_slot_type(slot_id) == SLOT_TYPE_GPV2) {
+      ret = bic_get_gpio64_config(slot_id, i, &gpio_config);
+    } else {
+      ret = bic_get_gpio_config(slot_id, i, &gpio_config);
+    }
+#else
     ret = bic_get_gpio_config(slot_id, i, &gpio_config);
+#endif
     if (ret == -1) {
       continue;
     }
 
     printf("gpio_config for pin#%d (%s):\n", i, gpio_name[i]);
-    printf("Direction: %s", t->bits.dir?"Output,":"Input, ");
-    printf(" Interrupt: %s", t->bits.ie?"Enabled, ":"Disabled,");
-    printf(" Trigger: %s", t->bits.edge?"Level ":"Edge ");
-    if (t->bits.trig == 0x0) {
+    printf("Direction: %s", gpio_config.dir?"Output,":"Input, ");
+    printf(" Interrupt: %s", gpio_config.ie?"Enabled, ":"Disabled,");
+    printf(" Trigger: %s", gpio_config.edge?"Level ":"Edge ");
+    if (gpio_config.trig == 0x0) {
       printf("Trigger,  Edge: %s\n", "Falling Edge");
-    } else if (t->bits.trig == 0x1) {
+    } else if (gpio_config.trig == 0x1) {
       printf("Trigger,  Edge: %s\n", "Rising Edge");
-    } else if (t->bits.trig == 0x2) {
+    } else if (gpio_config.trig == 0x2) {
       printf("Trigger,  Edge: %s\n", "Both Edges");
     } else  {
       printf("Trigger, Edge: %s\n", "Reserved");
@@ -246,57 +345,81 @@ util_get_gpio_config(uint8_t slot_id) {
     }
 
     printf("gpio_config for pin#%d (%s):\n", i, gpio_pin_name[i]);
-    printf("Direction: %s", t->bits.dir?"Output,":"Input, ");
-    printf(" Interrupt: %s", t->bits.ie?"Enabled, ":"Disabled,");
-    printf(" Trigger: %s", t->bits.edge?"Level ":"Edge ");
-    if (t->bits.trig == 0x0) {
+    printf("Direction: %s", gpio_config.dir?"Output,":"Input, ");
+    printf(" Interrupt: %s", gpio_config.ie?"Enabled, ":"Disabled,");
+    printf(" Trigger: %s", gpio_config.edge?"Level ":"Edge ");
+    if (gpio_config.trig == 0x0) {
       printf("Trigger,  Edge: %s\n", "Falling Edge");
-    } else if (t->bits.trig == 0x1) {
+    } else if (gpio_config.trig == 0x1) {
       printf("Trigger,  Edge: %s\n", "Rising Edge");
-    } else if (t->bits.trig == 0x2) {
+    } else if (gpio_config.trig == 0x2) {
       printf("Trigger,  Edge: %s\n", "Both Edges");
     } else  {
       printf("Trigger, Edge: %s\n", "Reserved");
     }
   }
 #endif
+ return ret;
 }
 
 
 // Tests utility for setting GPIO configuration
-static void
+static int
 util_set_gpio_config(uint8_t slot_id, uint8_t gpio, uint8_t config) {
-  int ret;
+  uint8_t gpio_cnt = gpio_pin_cnt;
+  int ret = 0;
+#if defined(CONFIG_FBY2_RC) || defined(CONFIG_FBY2_EP) || defined(CONFIG_FBY2_GPV2) || defined(CONFIG_FBY2_ND)
+  char **gpio_name;
+
+  ret = _get_gpio_cnt_name(slot_id, &gpio_cnt, &gpio_name);
+  if (ret) {
+    printf("ERROR: _get_gpio_cnt_name returns %d\n", ret);
+    return ret;
+  }
+#endif
+
+  if (gpio >= gpio_cnt) {
+    printf("slot %d: invalid GPIO pin number %d\n", slot_id, gpio);
+    return -1;
+  }
 
   printf("slot %d: setting GPIO %d config to 0x%02x\n", slot_id, gpio, config);
+#if defined(CONFIG_FBY2_GPV2)
+  if (fby2_get_slot_type(slot_id) == SLOT_TYPE_GPV2) {
+    ret = bic_set_gpio64_config(slot_id, gpio, (bic_gpio_config_t *)&config);
+  } else {
+    ret = bic_set_gpio_config(slot_id, gpio, (bic_gpio_config_t *)&config);
+  }
+#else
   ret = bic_set_gpio_config(slot_id, gpio, (bic_gpio_config_t *)&config);
+#endif
   if (ret) {
     printf("ERROR: bic_set_gpio_config returns %d\n", ret);
-    return;
   }
+  return ret;
 }
 
-static void
+static int
 util_get_config(uint8_t slot_id) {
-  int ret;
+  int ret = 0;
   bic_config_t config = {0};
-  bic_config_u *t = (bic_config_u *) &config;
 
   ret = bic_get_config(slot_id, &config);
   if (ret) {
     printf("util_get_config: bic_get_config failed\n");
-    return;
+    return ret;
   }
 
-  printf("SoL Enabled:  %s\n", t->bits.sol ? "Enabled" : "Disabled");
-  printf("POST Enabled: %s\n", t->bits.post ? "Enabled" : "Disabled");
+  printf("SoL Enabled:  %s\n", config.sol ? "Enabled" : "Disabled");
+  printf("POST Enabled: %s\n", config.post ? "Enabled" : "Disabled");
+  return ret;
 }
 
 
 // Test to get the POST buffer
-static void
+static int
 util_get_post_buf(uint8_t slot_id) {
-  int ret;
+  int ret = 0;
   uint8_t buf[MAX_IPMB_RES_LEN] = {0x0};
   uint8_t len;
   int i;
@@ -304,7 +427,7 @@ util_get_post_buf(uint8_t slot_id) {
   ret = bic_get_post_buf(slot_id, buf, &len);
   if (ret) {
     printf("util_get_post_buf: bic_get_post_buf returns %d\n", ret);
-    return;
+    return ret;
   }
 
   printf("util_get_post_buf: returns %d bytes\n", len);
@@ -315,12 +438,50 @@ util_get_post_buf(uint8_t slot_id) {
     printf("%02X ", buf[i]);
   }
   printf("\n");
+  return ret;
 }
 
+#if defined(CONFIG_FBY2_ND)
+static int
+util_print_dword_postcode_buf(uint8_t slot_id) {
+  int ret = 0;
+  uint32_t len;
+  uint32_t intput_len = 0;
+  int i;
+  uint32_t * dw_postcode_buf = malloc( MAX_POSTCODE_NUM * sizeof(uint32_t));
+  if (dw_postcode_buf) {
+    intput_len = MAX_POSTCODE_NUM;
+  } else {
+    syslog(LOG_ERR, "%s Error, failed to allocate dw_postcode buffer", __func__);
+    intput_len = 0;
+    return -1;
+  }
 
-static void
+  ret = bic_request_post_buffer_dword_data(slot_id, dw_postcode_buf, intput_len, &len);
+  if (ret) {
+    printf("bic_request_post_buffer_dword_data: returns %d\n", ret);
+    free(dw_postcode_buf);
+    return ret;
+  }
+  printf("util_get_post_buf: returns %d dword\n", len);
+  for (i = 0; i < len; i++) {
+    if (!(i % 4) && i)
+      printf("\n");
+
+    printf("[%08X] ", dw_postcode_buf[i]);
+  }
+  printf("\n");
+  if(dw_postcode_buf)
+    free(dw_postcode_buf);
+
+  return ret;
+
+}
+#endif
+
+static int
 util_read_fruid(uint8_t slot_id) {
-  int ret;
+  int ret = 0;
   int fru_size = 0;
 
   char path[64] = {0};
@@ -329,15 +490,15 @@ util_read_fruid(uint8_t slot_id) {
   ret = bic_read_fruid(slot_id, 0, path, &fru_size);
   if (ret) {
     printf("util_read_fruid: bic_read_fruid returns %d, fru_size: %d\n", ret, fru_size);
-    return;
   }
+  return ret;
 }
 
 
 
-static void
+static int
 util_get_sdr(uint8_t slot_id) {
-  int ret;
+  int ret = 0;
   uint8_t rlen;
   uint8_t rbuf[MAX_IPMB_RES_LEN] = {0};
 
@@ -375,12 +536,14 @@ util_get_sdr(uint8_t slot_id) {
       break;
     }
   }
+
+  return ret;
 }
 
 // Test to read all Sensors from Monolake Server
-static void
+static int
 util_read_sensor(uint8_t slot_id) {
-  int ret;
+  int ret = 0;
   int i;
   ipmi_sensor_reading_t sensor;
 
@@ -393,13 +556,14 @@ util_read_sensor(uint8_t slot_id) {
     printf("sensor#%d: value: 0x%X, flags: 0x%X, status: 0x%X, ext_status: 0x%X\n",
             i, sensor.value, sensor.flags, sensor.status, sensor.ext_status);
   }
+  return ret;
 }
 
 
 // runs performance test for loopCount loops
-static void
+static int
 util_perf_test(uint8_t slot_id, int loopCount) {
-  int ret;
+  int ret = 0;
   ipmi_dev_id_t id = {0};
   int i = 0;
   int index = slot_id -1;
@@ -423,8 +587,8 @@ util_perf_test(uint8_t slot_id, int loopCount) {
 
     ret = bic_get_dev_id(slot_id, &id);
     if (ret) {
-      printf("util_get_device_id: bic_get_dev_id returns %d, loop=%d\n", ret, i);
-      return;
+      printf("util_perf_test: bic_get_dev_id returns %d, loop=%d\n", ret, i);
+      return ret;
     }
 
     gettimeofday(&tv2, NULL);
@@ -463,7 +627,47 @@ util_perf_test(uint8_t slot_id, int loopCount) {
     }
   }  // while(1) {}
 
+  return ret;
+}
 
+static int
+util_bic_clear_cmos(uint8_t slot_id) {
+  int ret = 0;
+  ret = bic_clear_cmos(slot_id);
+  printf("Performing CMOS clear, status %d\n", ret);
+  return ret;
+}
+
+// reset BIC
+static int
+util_bic_reset(uint8_t slot_id) {
+  int ret = 0;
+  ret = bic_reset(slot_id);
+  printf("Performing BIC reset, status %d\n", ret);
+  return ret;
+}
+
+static int
+util_is_numeric(char **argv) {
+  int j = 0;
+  int len = 0;
+  for (int i = 0; i < 2; i++) { //check netFn cmd
+    len = strlen(argv[i]);
+    if (len > 2 && argv[i][0] == '0' && (argv[i][1] == 'x' || argv[i][1] == 'X')) {
+      j=2;
+      for (; j < len; j++) {
+        if (!isxdigit(argv[i][j]))
+          return 0;
+      }
+    } else {
+      j=0;
+      for (; j < len; j++) {
+        if (!isdigit(argv[i][j]))
+          return 0;
+      }
+    }
+  }
+  return 1;
 }
 
 static int
@@ -536,11 +740,14 @@ process_file(uint8_t slot_id, char *path) {
   return 0;
 }
 
+
 // TODO: Make it as User selectable tests to run
 int
 main(int argc, char **argv) {
-  uint8_t slot_id;
+  uint8_t slot_id, dev_id;
   uint8_t config;
+  int gpio;
+  int ret = 0;
 
   if (argc < 3) {
     goto err_exit;
@@ -558,53 +765,118 @@ main(int argc, char **argv) {
     goto err_exit;
   }
 
-  if (!strcmp(argv[2], "--get_dev_id")) {
-    util_get_device_id(slot_id);
-  } else if (!strcmp(argv[2], "--get_gpio")) {
-    util_get_gpio(slot_id);
-  } else if (!strcmp(argv[2], "--set_gpio")) {
-    if (argc < 5) {
+  if (!strcmp(argv[2], "--check_status")) {
+    if (argc != 3)
+      goto err_exit;
+    ret = util_check_status(slot_id);
+  } else if (!strcmp(argv[2], "--get_dev_id")) {
+    if (argc != 3)
+      goto err_exit;
+    ret = util_get_device_id(slot_id);
+  } else if (!strcmp(argv[2], "--read_jtag_id")) {
+    if (argc != 4) {
       goto err_exit;
     }
+    dev_id = atoi(argv[3]);
+    if (dev_id > 11) {
+      goto err_exit;
+    }
+    ret = util_read_jtag_id(slot_id, dev_id);
+  } else if (!strcmp(argv[2], "--get_gpio")) {
+    if (argc != 3)
+      goto err_exit;
+    util_get_gpio(slot_id);
+  } else if (!strcmp(argv[2], "--set_gpio")) {
+    if (argc != 5)
+      goto err_exit;
     if (strcmp(argv[4] , "0") && strcmp(argv[4] , "1")) {
       goto err_exit;
     }
-    util_set_gpio(slot_id, atoi(argv[3]), atoi(argv[4]));
+    gpio = atoi(argv[3]);
+    if (gpio > 0xFF || gpio < 0) {
+      printf("slot %d: invalid GPIO pin number %d\n", slot_id, gpio);
+      return -1;
+    }
+    util_set_gpio(slot_id, gpio, atoi(argv[4]));
   } else if (!strcmp(argv[2], "--get_gpio_config")) {
+    if (argc != 3)
+      goto err_exit;
     util_get_gpio_config(slot_id);
   } else if (!strcmp(argv[2], "--set_gpio_config")) {
-    if (argc < 5) {
+    if (argc != 5)
       goto err_exit;
-    }
     config = (uint8_t)strtol(argv[4], NULL, 0);
-    util_set_gpio_config(slot_id, atoi(argv[3]), config);
+    gpio = atoi(argv[3]);
+    if (gpio > 0xFF || gpio < 0) {
+      printf("slot %d: invalid GPIO pin number %d\n", slot_id, gpio);
+      return -1;
+    }
+    ret = util_set_gpio_config(slot_id, gpio, config);
   } else if (!strcmp(argv[2], "--get_config")) {
-    util_get_config(slot_id);
+    if (argc != 3)
+      goto err_exit;
+    ret = util_get_config(slot_id);
   } else if (!strcmp(argv[2], "--get_post_code")) {
-    util_get_post_buf(slot_id);
+    if (argc != 3)
+      goto err_exit;
+#if defined(CONFIG_FBY2_ND)
+  uint8_t server_type = 0xFF;
+  ret = fby2_get_server_type(slot_id, &server_type);
+  if (ret < 0) {
+    printf("Cannot get server type. 0x%x\n", server_type);
+    return -1;
+  }
+
+  switch (server_type) {
+    case SERVER_TYPE_ND:
+      ret = util_print_dword_postcode_buf(slot_id);
+      break;
+    case SERVER_TYPE_TL:
+    default:
+      ret = util_get_post_buf(slot_id);
+  }
+#else
+    ret = util_get_post_buf(slot_id);
+#endif
   } else if (!strcmp(argv[2], "--read_fruid")) {
-    util_read_fruid(slot_id);
+    if (argc != 3)
+      goto err_exit;
+    ret = util_read_fruid(slot_id);
   } else if (!strcmp(argv[2], "--get_sdr")) {
-    util_get_sdr(slot_id);
+    if (argc != 3)
+      goto err_exit;
+    ret = util_get_sdr(slot_id);
   } else if (!strcmp(argv[2], "--read_sensor")) {
-    util_read_sensor(slot_id);
+    if (argc != 3)
+      goto err_exit;
+    ret = util_read_sensor(slot_id);
   } else if (!strcmp(argv[2], "--perf_test")) {
-    if (argc < 4) {
+    if (argc != 4)
       goto err_exit;
-    }
-    util_perf_test(slot_id, atoi(argv[3]));
+    ret = util_perf_test(slot_id, atoi(argv[3]));
+  } else if (!strcmp(argv[2], "--clear_cmos")) {
+    if (argc != 3)
+      goto err_exit;
+    ret = util_bic_clear_cmos(slot_id);
   } else if (!strcmp(argv[2], "--file")) {
-    if (argc < 4) {
+    if (argc != 4)
+      goto err_exit;
+    ret = process_file(slot_id, argv[3]);
+  } else if (!strcmp(argv[2], "--reset")) {
+    if (argc != 3)
+      goto err_exit;
+    ret = util_bic_reset(slot_id);
+  } else if (argc >= 4) {
+    if (util_is_numeric(argv + 2)) {
+      return process_command(slot_id, (argc - 2), (argv + 2));
+    } else {
       goto err_exit;
     }
-    process_file(slot_id, argv[3]);
-  } else if (argc >= 4) {
-    return process_command(slot_id, (argc - 2), (argv + 2));
   } else {
     goto err_exit;
   }
 
-  return 0;
+  return ret;
 
 err_exit:
   print_usage_help();

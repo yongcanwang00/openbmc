@@ -25,6 +25,7 @@
 #include <openbmc/ipmi.h>
 #include <openbmc/ipmb.h>
 #include <openbmc/obmc-pal.h>
+#include <openbmc/obmc-sensor.h>
 #include <facebook/bic.h>
 #include <facebook/fby2_common.h>
 
@@ -39,16 +40,23 @@ extern "C" {
 #define THERMAL_CONSTANT      256
 #define ERR_NOT_READY         -2
 #define EER_READ_NA           -3
+#define EER_UNHANDLED         -4
 
-typedef struct _sensor_info_t {
-  bool valid;
-  sdr_full_t sdr;
-} sensor_info_t;
+#define SYS_CONFIG_PATH "/mnt/data/kv_store/sys_config/"
 
 typedef struct {
-  int8_t *dimm_location_file;
+  const char *dimm_location_file;
   uint8_t dimm_sensor_num;
 } rc_dimm_location_info;
+
+typedef struct {
+  bool is_accuracy;
+  uint8_t int_value;
+  uint8_t dec_value;
+  uint8_t flags;
+  uint8_t status;
+  uint8_t ext_status;
+} ipmi_general_sensor_reading_t;
 
 // Sensors under Bridge IC
 enum {
@@ -168,6 +176,7 @@ enum {
   BIC_RC_SENSOR_VR_HOT = 0xB2,  // Discrete
   BIC_RC_SENSOR_SYS_BOOTING_STS = 0x7E,  // Discrete
   BIC_RC_SENSOR_PROC_FAIL = 0x65, //Discrete
+  BIC_RC_SENSOR_THROTTLE_STATUS = 0x11, //Event-only
   BIC_RC_SENSOR_RAS_CRIT = 0xCB,    //Event-only
   BIC_RC_SENSOR_RAS_INFO = 0xCC,    //Event-only
   BIC_RC_SENSOR_RAS_FATAL = 0xCD,   //Event-only
@@ -232,6 +241,8 @@ enum {
   SP_SENSOR_MEZZ_TEMP = 0x82,
   SP_SENSOR_FAN0_TACH = 0x46,
   SP_SENSOR_FAN1_TACH = 0x47,
+  SP_SENSOR_FAN2_TACH = 0x48,
+  SP_SENSOR_FAN3_TACH = 0x49,
   SP_SENSOR_AIR_FLOW = 0x4A,
   SP_SENSOR_P5V = 0xE0,
   SP_SENSOR_P12V = 0xE1,
@@ -249,6 +260,8 @@ enum {
   SP_SENSOR_HSC_OUT_CURR = 0xC1,
   SP_SENSOR_HSC_TEMP = 0xC2,
   SP_SENSOR_HSC_IN_POWER = 0xC3,
+  SP_SENSOR_HSC_PEAK_IOUT = 0xC4,
+  SP_SENSOR_HSC_PEAK_PIN = 0xC5,
 };
 
 //Glacier Point
@@ -275,6 +288,158 @@ enum {
 
 enum{
   MEZZ_SENSOR_TEMP = 0x82,
+  // PLDM numeric sensors
+  NIC_SOC_TEMP = PLDM_NUMERIC_SENSOR_START,
+  PORT_0_TEMP,
+  PORT_0_LINK_SPEED,
+
+  // PLDM state sensors
+  NIC_HEALTH_STATE = PLDM_STATE_SENSOR_START,
+  PORT_0_LINK_STATE,
+};
+
+enum {
+  GPV2_SENSOR_INLET_TEMP = 0x01,
+  GPV2_SENSOR_OUTLET_TEMP = 0x07,
+  GPV2_SENSOR_P12V_BIC_SCALED = 0xD2,
+  GPV2_SENSOR_P3V3_STBY_BIC_SCALED = 0xD5,
+  GPV2_SENSOR_P0V92_BIC_SCALED = 0xDA,
+  GPV2_SENSOR_P1V8_BIC_SCALED = 0xD9,
+  GPV2_SENSOR_INA230_POWER = 0x29,
+  GPV2_SENSOR_INA230_VOLT = 0x2A,
+  GPV2_SENSOR_PCIE_SW_TEMP = 0x2B,
+  // VR
+  GPV2_SENSOR_3V3_VR_Vol = 0x27,
+  GPV2_SENSOR_0V92_VR_Vol = 0x28,
+  GPV2_SENSOR_3V3_VR_Curr = 0x2C,
+  GPV2_SENSOR_0V92_VR_Curr = 0x2D,
+  GPV2_SENSOR_3V3_VR_Pwr = 0x2E,
+  GPV2_SENSOR_0V92_VR_Pwr = 0x2F,
+  GPV2_SENSOR_3V3_VR_Temp = 0x25,
+  GPV2_SENSOR_0V92_VR_Temp = 0x26,
+  //M.2 0
+  GPV2_SENSOR_DEV0_INA231_PW = 0x30,
+  GPV2_SENSOR_DEV0_INA231_VOL = 0x31,
+  GPV2_SENSOR_DEV0_Temp = 0x36,
+  GPV2_SENSOR_DEV0_Ambient_Temp = 0x37,
+  //M.2 1
+  GPV2_SENSOR_DEV1_INA231_PW = 0x40,
+  GPV2_SENSOR_DEV1_INA231_VOL = 0x41,
+  GPV2_SENSOR_DEV1_Temp = 0x46,
+  GPV2_SENSOR_DEV1_Ambient_Temp = 0x47,
+  //M.2 2
+  GPV2_SENSOR_DEV2_INA231_PW = 0x50,
+  GPV2_SENSOR_DEV2_INA231_VOL = 0x51,
+  GPV2_SENSOR_DEV2_Temp = 0x56,
+  GPV2_SENSOR_DEV2_Ambient_Temp = 0x57,
+  //M.2 3
+  GPV2_SENSOR_DEV3_INA231_PW = 0x60,
+  GPV2_SENSOR_DEV3_INA231_VOL = 0x61,
+  GPV2_SENSOR_DEV3_Temp = 0x66,
+  GPV2_SENSOR_DEV3_Ambient_Temp = 0x67,
+  //M.2 4
+  GPV2_SENSOR_DEV4_INA231_PW = 0x70,
+  GPV2_SENSOR_DEV4_INA231_VOL = 0x71,
+  GPV2_SENSOR_DEV4_Temp = 0x76,
+  GPV2_SENSOR_DEV4_Ambient_Temp = 0x77,
+  //M.2 5
+  GPV2_SENSOR_DEV5_INA231_PW = 0x80,
+  GPV2_SENSOR_DEV5_INA231_VOL = 0x81,
+  GPV2_SENSOR_DEV5_Temp = 0x86,
+  GPV2_SENSOR_DEV5_Ambient_Temp = 0x87,
+  //M.2 6
+  GPV2_SENSOR_DEV6_INA231_PW = 0x90,
+  GPV2_SENSOR_DEV6_INA231_VOL = 0x91,
+  GPV2_SENSOR_DEV6_Temp = 0x96,
+  GPV2_SENSOR_DEV6_Ambient_Temp = 0x97,
+  //M.2 7
+  GPV2_SENSOR_DEV7_INA231_PW = 0xA0,
+  GPV2_SENSOR_DEV7_INA231_VOL = 0xA1,
+  GPV2_SENSOR_DEV7_Temp = 0xA6,
+  GPV2_SENSOR_DEV7_Ambient_Temp = 0xA7,
+  //M.2 8
+  GPV2_SENSOR_DEV8_INA231_PW = 0xB0,
+  GPV2_SENSOR_DEV8_INA231_VOL = 0xB1,
+  GPV2_SENSOR_DEV8_Temp = 0xB6,
+  GPV2_SENSOR_DEV8_Ambient_Temp = 0xB7,
+  //M.2 9
+  GPV2_SENSOR_DEV9_INA231_PW = 0xC0,
+  GPV2_SENSOR_DEV9_INA231_VOL = 0xC1,
+  GPV2_SENSOR_DEV9_Temp = 0xC6,
+  GPV2_SENSOR_DEV9_Ambient_Temp = 0xC7,
+  //M.2 10
+  GPV2_SENSOR_DEV10_INA231_PW = 0xE0,
+  GPV2_SENSOR_DEV10_INA231_VOL = 0xE1,
+  GPV2_SENSOR_DEV10_Temp = 0xE6,
+  GPV2_SENSOR_DEV10_Ambient_Temp = 0xE7,
+  //M.2 11
+  GPV2_SENSOR_DEV11_INA231_PW = 0xF0,
+  GPV2_SENSOR_DEV11_INA231_VOL = 0xF1,
+  GPV2_SENSOR_DEV11_Temp = 0xF6,
+  GPV2_SENSOR_DEV11_Ambient_Temp = 0xF7,
+};
+
+enum {
+  GPV2_SENSOR_DEV_INA231_PW = 0,
+  GPV2_SENSOR_DEV_INA231_VOL = 1,
+  GPV2_SENSOR_DEV_Temp = 6,
+  GPV2_SENSOR_DEV_Ambient_Temp = 7,
+};
+
+// Sensors under Bridge IC (NORTHDOME)
+enum {
+  BIC_ND_SENSOR_MB_INLET_TEMP = 0x01,
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_T = 0x02,
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_T = 0x03,
+  BIC_ND_SENSOR_SOC_CPU0_TEMP = 0x05,
+  BIC_ND_SENSOR_MB_OUTLET_TEMP_T = 0x07,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_T = 0x0A,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_T = 0x0B,
+  BIC_ND_SENSOR_MB_OUTLET_TEMP_B = 0x0D,
+  BIC_ND_SENSOR_NVME1_CTEMP = 0x0E,
+  BIC_ND_SENSOR_SYSTEM_STATUS = 0x10, //Discrete
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_I = 0x20,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_I = 0x21,
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_P = 0x22,
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_I = 0x23,
+  BIC_ND_SENSOR_PVDDCR_CPU_VR_V = 0x24,
+  BIC_ND_SENSOR_INA260_POWER = 0x28,
+  BIC_ND_SENSOR_INA230_POWER = 0x29,
+  BIC_ND_SENSOR_INA230_VOLTAGE = 0x2A,
+  BIC_ND_SENSOR_POST_ERR = 0x2B, //Event-only
+  BIC_ND_SENSOR_SOC_Package_Pwr = 0x2C,
+  BIC_ND_SENSOR_INA260_VOLTAGE = 0x2E,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_P = 0x32,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_I = 0x33,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_V = 0x34,
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_P = 0x39,
+  BIC_ND_SENSOR_PVDDIO_EFGH_VR_P = 0x3A,
+  BIC_ND_SENSOR_PWR_THRESH_EVT = 0x3B, //Event-only
+  BIC_ND_SENSOR_MACHINE_CHK_ERR = 0x40, //Event-only
+  BIC_ND_SENSOR_PCIE_ERR = 0x41, //Event-only
+  BIC_ND_SENSOR_OTHER_IIO_ERR = 0x43, //Event-only
+  BIC_ND_SENSOR_PROCHOT_EXT = 0x51, //Event-only
+  BIC_ND_SENSOR_PVDDCR_SOC_VR_V = 0x54,
+  BIC_ND_SENSOR_PVDDIO_ABCD_VR_V = 0x55,
+  BIC_ND_SENSOR_POWER_ERR = 0x56, //Event-only
+  BIC_ND_SENSOR_MEMORY_ECC_ERROR = 0x63, //Event-only
+  BIC_ND_SENSOR_PROCESSOR_FAIL = 0x65, //Discrete
+  BIC_ND_SENSOR_VR_HOT = 0xB2, //Discrete
+  BIC_ND_SENSOR_CPU_DIMM_HOT = 0xB3, //Discrete
+  BIC_ND_SENSOR_SOC_DIMMA_TEMP = 0xB4,
+  BIC_ND_SENSOR_SOC_DIMMC_TEMP = 0xB5,
+  BIC_ND_SENSOR_SOC_DIMMD_TEMP = 0xB6,
+  BIC_ND_SENSOR_SOC_DIMME_TEMP = 0xB7,
+  BIC_ND_SENSOR_SOC_DIMMG_TEMP = 0xB8,
+  BIC_ND_SENSOR_SOC_DIMMH_TEMP = 0xB9,
+  BIC_ND_SENSOR_P3V3_MB = 0xD0,
+  BIC_ND_SENSOR_P12V_STBY_MB = 0xD2,
+  BIC_ND_SENSOR_P1V8_BIC = 0xD3,
+  BIC_ND_SENSOR_P3V3_STBY_MB = 0xD5,
+  BIC_ND_SENSOR_PVPP_EFGH = 0xD6,
+  BIC_ND_SENSOR_PV_BAT = 0xD7,
+  BIC_ND_SENSOR_PVPP_ABCD = 0xD8,
+  BIC_ND_SENSOR_P1V8_STBY_BIC = 0xD9,
 };
 
 enum {
@@ -304,7 +469,18 @@ extern const uint8_t dc_cf_sensor_list[];
 
 extern const uint8_t spb_sensor_list[];
 
+extern const uint8_t spb_sensor_dual_r_fan_list[];
+
 extern const uint8_t nic_sensor_list[];
+
+#ifdef CONFIG_FBY2_GPV2
+extern const uint8_t gpv2_sensor_list[];
+#endif
+
+#ifdef CONFIG_FBY2_ND
+extern const uint8_t bic_nd_sensor_list[];
+extern const uint8_t bic_nd_discrete_list[];
+#endif
 
 //extern float spb_sensor_threshold[MAX_SENSOR_NUM][MAX_SENSOR_THRESHOLD + 1];
 
@@ -325,9 +501,21 @@ extern size_t bic_discrete_cnt;
 
 extern size_t spb_sensor_cnt;
 
+extern size_t spb_single_r_fan_sensor_cnt;
+
+extern size_t spb_dual_r_fan_sensor_cnt;
+
 extern size_t nic_sensor_cnt;
 
 extern size_t dc_cf_sensor_cnt;
+
+#ifdef CONFIG_FBY2_GPV2
+extern size_t gpv2_sensor_cnt;
+#endif
+
+#ifdef CONFIG_FBY2_ND
+extern size_t bic_nd_sensor_cnt;
+#endif
 
 int fby2_sensor_read(uint8_t fru, uint8_t sensor_num, void *value);
 int fby2_sensor_name(uint8_t fru, uint8_t sensor_num, char *name);
@@ -337,7 +525,11 @@ int fby2_sensor_threshold(uint8_t fru, uint8_t sensor_num, uint8_t thresh, float
 int fby2_sensor_sdr_init(uint8_t fru, sensor_info_t *sinfo);
 int fby2_get_slot_type(uint8_t fru);
 int fby2_get_server_type(uint8_t fru, uint8_t *type);
-
+int fby2_get_server_type_directly(uint8_t fru, uint8_t *type);
+int fby2_mux_control(char *device, uint8_t addr, uint8_t channel);
+int fby2_disable_gp_m2_monior(uint8_t slot_id, uint8_t dis);
+int fby2_check_hsc_sts_iout(uint8_t mask);
+int fby2_check_hsc_fault(void);
 
 #ifdef __cplusplus
 } // extern "C"

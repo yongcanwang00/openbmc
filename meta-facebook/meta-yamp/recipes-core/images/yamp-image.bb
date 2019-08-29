@@ -1,6 +1,6 @@
 # Copyright 2018-present Facebook. All Rights Reserved.
 
-inherit aspeed_uboot_image
+inherit kernel_fitimage
 
 require recipes-core/images/fb-openbmc-image.bb
 
@@ -14,11 +14,16 @@ IMAGE_INSTALL += " \
   packagegroup-openbmc-python3 \
   packagegroup-openbmc-rest3 \
   ast-mdio \
-  bitbang \
   flashrom \
+  lldp-util \
   mterm \
   openbmc-gpio \
   openbmc-utils \
   usb-console \
   wedge-eeprom \
+  weutil-dhcp-id \
+  fscd \
+  led-controld \
+  spatula \
+  ncsi-util \
   "

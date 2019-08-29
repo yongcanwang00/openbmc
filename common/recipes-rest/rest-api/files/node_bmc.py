@@ -18,33 +18,47 @@
 # Boston, MA 02110-1301 USA
 #
 
-from subprocess import *
+import os.path
 import re
+from subprocess import *
+from uuid import getnode as get_mac
+
 from node import node
 from pal import *
-from uuid import getnode as get_mac
-import os.path
 from vboot import get_vboot_status
+
+
+# Read all contents of file path specified.
+def read_file_contents(path):
+    try:
+        with open(path, "r") as proc_file:
+            content = proc_file.readlines()
+    except IOError as e:
+        content = None
+
+    return content
+
 
 def getSPIVendor(manufacturer_id):
     # Define Manufacturer ID
-    MFID_WINBOND = "EF"    # Winbond
-    MFID_MICRON = "20"     # Micron
-    MFID_MACRONIX = "C2"   # Macronix
+    MFID_WINBOND = "EF"  # Winbond
+    MFID_MICRON = "20"  # Micron
+    MFID_MACRONIX = "C2"  # Macronix
 
     vendor_name = {
         MFID_WINBOND: "Winbond",
         MFID_MICRON: "Micron",
         MFID_MACRONIX: "Macronix",
-        }
+    }
 
     if manufacturer_id in vendor_name:
-        return(vendor_name[manufacturer_id])
+        return vendor_name[manufacturer_id]
     else:
-        return("Unknown")
+        return "Unknown"
+
 
 class bmcNode(node):
-    def __init__(self, info = None, actions = None):
+    def __init__(self, info=None, actions=None):
         if info == None:
             self.info = {}
         else:
@@ -56,22 +70,23 @@ class bmcNode(node):
 
     def getInformation(self, param={}):
         # Get Platform Name
-        name = pal_get_platform_name().decode()
+        name = pal_get_platform_name()
 
         # Get MAC Address
         mac_path = "/sys/class/net/eth0/address"
         if os.path.isfile(mac_path):
-            mac = open('/sys/class/net/eth0/address').read()
+            mac = open("/sys/class/net/eth0/address").read()
             mac_addr = mac[0:17].upper()
         else:
             mac = get_mac()
-            mac_addr = ':'.join(("%012X" % mac)[i:i+2] for i in range(0, 12, 2))
+            mac_addr = ":".join(("%012X" % mac)[i : i + 2] for i in range(0, 12, 2))
 
         # Get BMC Reset Reason
-        wdt_counter = Popen('devmem 0x1e785010', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
+        wdt_counter = (
+            Popen("devmem 0x1e785010", shell=True, stdout=PIPE).stdout.read().decode()
+        )
         wdt_counter = int(wdt_counter, 0)
-        wdt_counter &= 0xff00
+        wdt_counter &= 0xFF00
 
         if wdt_counter:
             por_flag = 0
@@ -84,88 +99,110 @@ class bmcNode(node):
             reset_reason = "User Initiated Reset or WDT Reset"
 
         # Get BMC's Up Time
-        data = Popen('uptime', \
-                        shell=True, stdout=PIPE).stdout.read().decode()
+        data = Popen("uptime", shell=True, stdout=PIPE).stdout.read().decode()
         uptime = data.strip()
 
+        # Use another method, ala /proc, but keep the old one for backwards
+        # compat.
+        # See http://man7.org/linux/man-pages/man5/proc.5.html for details
+        # on full contents of proc endpoints.
+        uptime_seconds = read_file_contents("/proc/uptime")[0].split()[0]
+
+        # Pull load average directory from proc instead of processing it from
+        # the contents of uptime command output later.
+        load_avg = read_file_contents("/proc/loadavg")[0].split()[0:3]
+
         # Get Usage information
-        data = Popen('top -b n1', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
-        adata = data.split('\n')
+        data = Popen("top -b n1", shell=True, stdout=PIPE).stdout.read().decode()
+        adata = data.split("\n")
         mem_usage = adata[0]
         cpu_usage = adata[1]
 
         # Get OpenBMC version
         obc_version = ""
-        data = Popen('cat /etc/issue', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
+        data = Popen("cat /etc/issue", shell=True, stdout=PIPE).stdout.read().decode()
 
         # OpenBMC Version
-        ver = re.search(r'[v|V]([\w\d._-]*)\s', data)
+        ver = re.search(r"[v|V]([\w\d._-]*)\s", data)
         if ver:
             obc_version = ver.group(1)
 
         # Get U-boot Version
         uboot_version = ""
-        data = Popen( 'strings /dev/mtd0 | grep U-Boot | grep 20', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
+        data = (
+            Popen("strings /dev/mtd0 | grep U-Boot | grep 20", shell=True, stdout=PIPE)
+            .stdout.read()
+            .decode()
+        )
 
         # U-boot Version
-        lines=data.splitlines()
-        data_len=len(lines)
+        lines = data.splitlines()
+        data_len = len(lines)
         for i in range(data_len):
-            if i!=data_len-1:
-                uboot_version += lines[i] +", "
+            if i != data_len - 1:
+                uboot_version += lines[i] + ", "
             else:
                 uboot_version += lines[i]
 
         # Get kernel release and kernel version
         kernel_release = ""
-        data = Popen( 'uname -r', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
-        kernel_release = data.strip('\n')
+        data = Popen("uname -r", shell=True, stdout=PIPE).stdout.read().decode()
+        kernel_release = data.strip("\n")
 
         kernel_version = ""
-        data = Popen( 'uname -v', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
-        kernel_version = data.strip('\n')
+        data = Popen("uname -v", shell=True, stdout=PIPE).stdout.read().decode()
+        kernel_version = data.strip("\n")
 
         # Get TPM version
         tpm_path = "/sys/class/tpm/tpm0/device/caps"
+        tpm_tcg_version = "NA"
+        tpm_fw_version = "NA"
         if os.path.isfile(tpm_path):
             with open(tpm_path) as f:
                 for line in f:
-                    if 'TCG version:' in line:
-                        tpm_tcg_version = line.strip("TCG version: ").strip('\n')
-                    elif 'Firmware version:' in line:
-                        tpm_fw_version = line.strip("Firmware version: ").strip('\n')
-        else:
-            tpm_tcg_version = "NA"
-            tpm_fw_version = "NA"
+                    if "TCG version:" in line:
+                        tpm_tcg_version = line.strip("TCG version: ").strip("\n")
+                    elif "Firmware version:" in line:
+                        tpm_fw_version = line.strip("Firmware version: ").strip("\n")
 
         # SPI0 Vendor
         spi0_vendor = ""
-        data = Popen('cat /tmp/spi0.0_vendor.dat | cut -c1-2', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
-        spi0_mfid = data.strip('\n')
+        data = (
+            Popen("cat /tmp/spi0.0_vendor.dat | cut -c1-2", shell=True, stdout=PIPE)
+            .stdout.read()
+            .decode()
+        )
+        spi0_mfid = data.strip("\n")
         spi0_vendor = getSPIVendor(spi0_mfid)
 
         # SPI1 Vendor
         spi1_vendor = ""
-        data = Popen('cat /tmp/spi0.1_vendor.dat | cut -c1-2', \
-                            shell=True, stdout=PIPE).stdout.read().decode()
-        spi1_mfid = data.strip('\n')
+        data = (
+            Popen("cat /tmp/spi0.1_vendor.dat | cut -c1-2", shell=True, stdout=PIPE)
+            .stdout.read()
+            .decode()
+        )
+        spi1_mfid = data.strip("\n")
         spi1_vendor = getSPIVendor(spi1_mfid)
 
-        #ASD status - check if ASD daemon/asd-test is currently running
-        asd_status = bool(Popen('ps | grep -i [a]sd', shell=True, stdout=PIPE).stdout.read())
+        # ASD status - check if ASD daemon/asd-test is currently running
+        asd_status = bool(
+            Popen("ps | grep -i [a]sd", shell=True, stdout=PIPE).stdout.read()
+        )
         vboot_info = get_vboot_status()
+
+        used_fd_count = read_file_contents("/proc/sys/fs/file-nr")[0].split()[0]
 
         info = {
             "Description": name + " BMC",
             "MAC Addr": mac_addr,
             "Reset Reason": reset_reason,
+            # Upper case Uptime is for legacy
+            # API support
             "Uptime": uptime,
+            # Lower case Uptime is for simpler
+            # more pass-through proxy
+            "uptime": uptime_seconds,
             "Memory Usage": mem_usage,
             "CPU Usage": cpu_usage,
             "OpenBMC Version": obc_version,
@@ -177,27 +214,19 @@ class bmcNode(node):
             "SPI1 Vendor": spi1_vendor,
             "At-Scale-Debug Running": asd_status,
             "vboot": vboot_info,
-            }
+            "load-1": load_avg[0],
+            "load-5": load_avg[1],
+            "load-15": load_avg[2],
+            "open-fds": used_fd_count,
+        }
 
         return info
 
-    def doAction(self, data, is_read_only=True):
-        if is_read_only:
-            result = { "result": 'failure' }
-        else:
-            if (data["action"] != 'reboot'):
-                result = 'failure'
-            else:
-                Popen('sleep 1; /sbin/reboot', shell=True, stdout=PIPE)
-                result = 'success'
+    def doAction(self, data, param={}):
+        Popen("sleep 1; /sbin/reboot", shell=True, stdout=PIPE)
+        return {"result": "success"}
 
-            result = {"result": result}
 
-        return result
-
-def get_node_bmc(is_read_only=True):
-    if is_read_only:
-        actions =  []
-    else:
-        actions = ["reboot"]
-    return bmcNode(actions = actions)
+def get_node_bmc():
+    actions = ["reboot"]
+    return bmcNode(actions=actions)

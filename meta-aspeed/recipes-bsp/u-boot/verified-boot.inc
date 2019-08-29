@@ -1,3 +1,20 @@
+# Copyright 2019-present Facebook. All Rights Reserved.
+#
+# This program file is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; version 2 of the License.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program in a file named COPYING; if not, write to the
+# Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301 USA
+
 # IMAGE_FEATURES control content of the core reference images
 #
 # Available IMAGE_FEATURES:
@@ -142,8 +159,30 @@ fitimage_emit_section_ramdisk() {
             description = "RAMDISK";
             data = /incbin/("${IMAGE_RAMDISK}");
             type = "ramdisk";
+            os = "linux";
             arch = "${UBOOT_ARCH}";
             compression = "${IMAGE_COMPRESSION}";
+            hash@1 {
+                algo = "${VERIFIED_BOOT_HASH_ALGORITHM}";
+            };
+        };
+EOF
+}
+
+#
+# Emit the fitImage ITS DTB section
+#
+# $1 ... FIT source
+# $2 ... Image counter
+# $3 ... Path to DTB image
+fitimage_emit_section_dtb() {
+    cat << EOF >> ${1}
+        fdt@${2} {
+            description = "Flattened Device Tree blob";
+            data = /incbin/("${3}");
+            type = "flat_dt";
+            arch = "${UBOOT_ARCH}";
+            compression = "none";
             hash@1 {
                 algo = "${VERIFIED_BOOT_HASH_ALGORITHM}";
             };
@@ -182,16 +221,25 @@ EOF
 # $1 - FIT source
 # $2 - Linux kernel ID
 # $3 - Ramdisk image ID
+# $4 - DTB image ID
 fitimage_emit_section_config() {
     SOURCE=$1
+    conf_desc="Boot Linux kernel"
 
-    # Test if we have any DTBs at all
+    # Test if we have ramdisk
     if [ -z "${3}" ] ; then
-        conf_desc="Boot Linux kernel"
         ramdisk_line=""
     else
-        conf_desc="Boot Linux kernel with ramdisk"
+        conf_desc="${conf_desc} with ramdisk"
         ramdisk_line="ramdisk = \"ramdisk@${3}\";"
+    fi
+
+    # Test if we have any DTBs at all
+    if [ -z "${4}" ] ; then
+        fdt_line=""
+    else
+        conf_desc="${conf_desc} and device tree blob"
+        fdt_line="fdt = \"fdt@${4}\";"
     fi
     kernel_line="kernel = \"kernel@${2}\";"
 
@@ -201,6 +249,7 @@ fitimage_emit_section_config() {
             description = "${conf_desc}";
             ${kernel_line}
             ${ramdisk_line}
+            ${fdt_line}
             signature@1 {
                 algo = "${VERIFIED_BOOT_ALGORITHM}";
                 key-name-hint = "${VERIFIED_BOOT_KEYNAME}";

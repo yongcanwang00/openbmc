@@ -19,7 +19,25 @@
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
 
+# shellcheck disable=SC1091
 . /usr/local/bin/openbmc-utils.sh
+
+#
+# Create i2c switches at the beginning so all the channels are properly
+# initialized when the child devices are created: the step is only needed
+# for kernel 4.1 as i2c switches are handled in device tree for newer
+# kernel versions.
+#
+# 7-0070 is the i2c-switch for ltc power supply in DC deployment. It has
+# 8 child channels which are assigned i2c bus 14-21. 2 PFE1100 power
+# supplies are connected to channel #0 (14-005a) and #1 (15-0059).
+#
+if uname -r | grep "4\.1\.*" > /dev/null 2>&1; then
+    i2c_mux_add_sync 7 0x70 pca9548 21
+fi
+
+# Bus 2
+i2c_device_add 2 0x3a pwr1014a
 
 # Bus 3
 i2c_device_add 3 0x48 tmp75
@@ -40,6 +58,7 @@ i2c_device_add 7 0x50 24c02         # BMC PHY EEPROM
 i2c_device_add 7 0x51 24c64         # PFE1100 power supply EEPROM
 i2c_device_add 7 0x52 24c64         # PFE1100 power supply EEPROM
 i2c_device_add 7 0x6f ltc4151
+i2c_device_add 7 0x4a ltc4281
 
 # Bus 8
 i2c_device_add 8 0x33 fancpld
@@ -51,3 +70,7 @@ i2c_device_add 8 0x49 tmp75
 
 # Bus 12
 i2c_device_add 12 0x31 syscpld
+
+# Bus 14-21 from pca9548 mux_bus
+i2c_device_add 14 0x5a pfe1100
+i2c_device_add 15 0x59 pfe1100

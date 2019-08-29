@@ -31,43 +31,7 @@
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
 
-#
-# instantiate an i2c device
-# $1 - device name/type
-# $2 - device address
-# $3 - parent bus number
-#
-add_device() {
-    echo ${1} ${2} > /sys/class/i2c-dev/i2c-${3}/device/new_device
-}
-
-#
-# instantiate an i2c-mux device and wait untill all its child buses
-# are initialized before the function returns.
-# $1 - device name/type
-# $2 - device address
-# $3 - parent bus number
-# $4 - bus number of the last i2c-mux channel
-#
-add_i2c_mux_sync() {
-    retry=0
-    max_retry=100
-    bus_dir="/sys/class/i2c-dev/i2c-${4}"
-
-    add_device ${1} ${2} ${3}
-
-    until [ -d ${bus_dir} ]
-    do
-        usleep 2000 # sleep for 2 milliseconds
-
-        retry=$((retry + 1))
-        if [ $retry -ge ${max_retry} ]
-        then
-            echo "i2c-mux ${3}-${2} initialization failed: timer expired"
-            exit 1
-        fi
-    done
-}
+. /usr/local/bin/i2c-utils.sh
 
 #
 # instantiate all the i2c-muxes.
@@ -82,17 +46,13 @@ bulk_create_i2c_mux() {
     last_child_bus=15
     i2c_mux_name="pca9548"
 
-    # Creat i2c-mux 1-0077, which registers 8 i2c buses: 16-23
-    last_child_bus=$((last_child_bus + 8))
-    add_i2c_mux_sync ${i2c_mux_name} 0x77 1 ${last_child_bus}
-
-    # Creat i2c-mux 2-0071, which registers 8 i2c buses: 24-31
-    last_child_bus=$((last_child_bus + 8))
-    add_i2c_mux_sync ${i2c_mux_name} 0x71 2 ${last_child_bus}
-
-    # Creat i2c-mux 8-0077, which registers 8 i2c buses: 32-39
-    last_child_bus=$((last_child_bus + 8))
-    add_i2c_mux_sync ${i2c_mux_name} 0x77 8 ${last_child_bus}
+    # The first-level i2c-muxes which are directly connected to aspeed
+    # i2c adapters are described in device tree, and the bus number of
+    # these i2c-muxes' channels are hardcoded (as below) to avoid
+    # breaking the existing applications.
+    #    i2c-mux 1-0077: child bus 16-23
+    #    i2c-mux 2-0071: child bus 24-31
+    #    i2c-mux 8-0077: child bus 32-39
 
     # Create second-level i2c-muxes which are connected to first level
     # mux "1-0077". "1-0077" has 8 channels and each channel is connected
@@ -103,7 +63,7 @@ bulk_create_i2c_mux() {
     for bus in ${parent_buses}; do
         for addr in ${mux_addresses}; do
             last_child_bus=$((last_child_bus + 8))
-            add_i2c_mux_sync ${i2c_mux_name} ${addr} ${bus} ${last_child_bus}
+            i2c_mux_add_sync ${bus} ${addr} ${i2c_mux_name} ${last_child_bus}
         done
     done
 
@@ -114,7 +74,7 @@ bulk_create_i2c_mux() {
     parent_buses="32 33 34 35"
     for bus in ${parent_buses}; do
         last_child_bus=$((last_child_bus + 8))
-        add_i2c_mux_sync ${i2c_mux_name} 0x70 ${bus} ${last_child_bus}
+        i2c_mux_add_sync ${bus} 0x70 ${i2c_mux_name} ${last_child_bus}
     done
 }
 
@@ -124,22 +84,22 @@ if [[ ${KERNEL_VERSION} != 4.1.* ]]; then
 fi
 
 # EEPROM
-add_device 24c64 0x51 6
+i2c_device_add 6 0x51 24c64
 
 #PCB EEPROM
-add_device 24c64 0x50 28
+i2c_device_add 28 0x50 24c64
 
 # Two temperature sensors on CMM
-add_device tmp75 0x48 3         # inlet
-add_device tmp75 0x49 3         # outlet
+i2c_device_add 3 0x48 tmp75 # inlet
+i2c_device_add 3 0x49 tmp75 # outlet
 
 # CMM CPLD
-add_device cmmcpld 0x3e 13
+i2c_device_add 13 0x3e cmmcpld
 
 # FAN CPLD
 fancpld_busses="171 179 187 195"
 for bus in ${fancpld_busses}; do
-    add_device fancpld 0x33 ${bus}
+    i2c_device_add ${bus} 0x33 fancpld
 done
 
 # Temperature sensors
@@ -176,15 +136,15 @@ temp_busses="42 45 58 61 74 77 90 93 106 122 138 154"
 temp_addrs="0x48 0x49 0x4a 0x4b"
 for bus in ${temp_busses}; do
     for addr in ${temp_addrs}; do
-        add_device tmp75 ${addr} ${bus}
+        i2c_device_add ${bus} ${addr} tmp75
     done
 done
 
 # Temperature sensors on SCM
 temp_busses="113 129 49 65 81 97 145 161"
 for bus in ${temp_busses}; do
-    add_device tmp75 0x48 ${bus}
-    add_device tmp75 0x49 $((bus + 1))
+    i2c_device_add ${bus} 0x48 tmp75
+    i2c_device_add $((bus + 1)) 0x49 tmp75
 done
 
 # FCB PCA9534
@@ -193,19 +153,29 @@ done
 # so that GPIO numbers are increasing from FCB1-FCB4
 fcb_busses="196 188 180 172"
 for bus in ${fcb_busses}; do
-    add_device pca9534 0x22 ${bus}
+    i2c_device_add ${bus} 0x22 pca9534
 done
 
 # PSU PRESENCE
 # Spec says pca9506 but this kernel version supports only 9505
 # which works for us
-add_device pca9505 0x20 29
+i2c_device_add 29 0x20 pca9505
 
 # PFE modules
-add_device pfe3000 0x10 27 # psu1
-add_device pfe3000 0x10 26 # psu2
-add_device pfe3000 0x10 25 # psu3
-add_device pfe3000 0x10 24 # psu4
+i2c_device_add 27 0x10 pfe3000 # psu1
+i2c_device_add 26 0x10 pfe3000 # psu2
+i2c_device_add 25 0x10 pfe3000 # psu3
+i2c_device_add 24 0x10 pfe3000 # psu4
 
 # LEDs
-add_device pca9535 0x21 30
+i2c_device_add 30 0x21 pca9535
+
+#
+# Go through all i2c devices and trigger manual driver binding if needed.
+#
+if [[ ${KERNEL_VERSION} != 4.1.* ]]; then
+    # sleep 50 milliseconds just in case driver binding is "delayed".
+    usleep 50000
+
+    i2c_check_driver_binding "force_binding"
+fi

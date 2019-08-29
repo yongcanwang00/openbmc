@@ -18,46 +18,49 @@
 import abc
 import os
 import re
+from subprocess import PIPE, Popen
+
 from fsc_util import Logger
-from subprocess import Popen, PIPE
 
 
 class FscSensorBase(object):
-    '''
+    """
     Fsc sensor base class
-    '''
+    """
 
     def __init__(self, **kwargs):
-        if 'name' in kwargs:
-            self.name = kwargs['name']
-        if 'read_source' in kwargs:
-            self.read_source = kwargs['read_source']
-        if 'write_source' in kwargs:
-            self.write_source = kwargs['write_source']
+        if "name" in kwargs:
+            self.name = kwargs["name"]
+        if "read_source" in kwargs:
+            self.read_source = kwargs["read_source"]
+        if "write_source" in kwargs:
+            self.write_source = kwargs["write_source"]
         else:
             self.write_source = None
         self.read_source_fail_counter = 0
         self.write_source_fail_counter = 0
+        self.read_source_wrong_counter = 0
         self.hwmon_source = None
 
     @abc.abstractmethod
     def read(self, **kwargs):
-        '''
+        """
         Read value from read_source
-        '''
+        """
         return
 
     def write(self, **kwargs):
-        '''
+        """
         Write value to write_source
-        '''
+        """
         pass
 
 
 class FscSensorSourceSysfs(FscSensorBase):
-    '''
+    """
     Class for FSC sensor source for sysfs
-    '''
+    """
+
     def get_hwmon_source(self):
         # After BMC comes up this hwmon device is setup once and we can cache
         # that data for the first time instead of determining the source each
@@ -71,14 +74,16 @@ class FscSensorSourceSysfs(FscSensorBase):
             construct_hwmon_path = result[0] + "hwmon"
             x = None
             for x in os.listdir(construct_hwmon_path):
-                if x.startswith('hwmon'):
-                    construct_hwmon_path = construct_hwmon_path + "/" + x + "/" + result[2].split("/")[1]
+                if x.startswith("hwmon"):
+                    construct_hwmon_path = (
+                        construct_hwmon_path + "/" + x + "/" + result[2].split("/")[1]
+                    )
                     if os.path.exists(construct_hwmon_path):
                         self.hwmon_source = construct_hwmon_path
                         return self.hwmon_source
 
     def read(self, **kwargs):
-        '''
+        """
         Reads all sensors values from sysfs source and return data read.
         There are two kinds of sensors temperature and fans.
 
@@ -87,7 +92,7 @@ class FscSensorSourceSysfs(FscSensorBase):
 
         Return:
             blob of data read from sysfs
-        '''
+        """
 
         # IF read_source has hwmon* then determine what is the hwmon device
         # and use that for reading
@@ -95,9 +100,9 @@ class FscSensorSourceSysfs(FscSensorBase):
         if "hwmon*" in self.read_source:
             readsysfs = self.get_hwmon_source()
 
-        cmd = 'cat ' + readsysfs
+        cmd = "cat " + readsysfs
         Logger.debug("Reading data with cmd=%s" % cmd)
-        data = ''
+        data = ""
         try:
             proc = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
             data = proc.stdout.read().decode()
@@ -116,7 +121,7 @@ class FscSensorSourceSysfs(FscSensorBase):
         return data
 
     def write(self, value):
-        '''
+        """
         Writes to write_source using echo to sysfs location
         echo #value > sysfs_path
 
@@ -125,12 +130,12 @@ class FscSensorSourceSysfs(FscSensorBase):
 
         Return:
             N/A
-        '''
+        """
         if self.write_source is None:
             return
-        cmd = 'echo ' + str(value) + ' > ' + self.write_source
+        cmd = "echo " + str(value) + " > " + self.write_source
         Logger.debug("Setting value using cmd=%s" % cmd)
-        response = ''
+        response = ""
         try:
             response = Popen(cmd, shell=True, stdout=PIPE).stdout.read().decode()
         except SystemExit:
@@ -141,16 +146,17 @@ class FscSensorSourceSysfs(FscSensorBase):
 
 
 class FscSensorSourceUtil(FscSensorBase):
-    '''
+    """
     Class for FSC sensor source for util
-    '''
+    """
 
     def read(self, **kwargs):
-        '''
+        """
         Reads all sensors values from the util and return data read.
         There are two kinds of sensors temperature and fans. Following
         are the util usages:
         sensor util: 'util <fru name>' Reads all sensors from a specific fru
+                     'util <fru name> <sensor number>' Reads sensor from a specific fru number
         fan util: 'util' Reads all fan speeds
 
         Arguments:
@@ -158,12 +164,17 @@ class FscSensorSourceUtil(FscSensorBase):
 
         Return:
             blob of data read from util
-        '''
+        """
         cmd = self.read_source
-        if 'fru' in kwargs:
-            cmd = cmd + " " + kwargs['fru']
+        if "fru" in kwargs:
+            if "num" in kwargs and len(kwargs["num"]):
+                cmd = ""
+                for num in kwargs["num"]:
+                    cmd += self.read_source + " " + kwargs["fru"] + " " + num + ";"
+            else:
+                cmd = cmd + " " + kwargs["fru"]
         Logger.debug("Reading data with cmd=%s" % cmd)
-        data = ''
+        data = ""
         try:
             data = Popen(cmd, shell=True, stdout=PIPE).stdout.read().decode()
         except SystemExit:
@@ -174,7 +185,7 @@ class FscSensorSourceUtil(FscSensorBase):
         return data
 
     def write(self, value):
-        '''
+        """
         Writes to write_source using util.
 
         Arguments:
@@ -182,12 +193,12 @@ class FscSensorSourceUtil(FscSensorBase):
 
         Return:
             N/A
-        '''
+        """
         if self.write_source is None:
             return
         cmd = self.write_source % (int(value))
         Logger.debug("Setting value using cmd=%s" % cmd)
-        response = ''
+        response = ""
         try:
             response = Popen(cmd, shell=True, stdout=PIPE).stdout.read().decode()
             if response.find("Error") != -1:

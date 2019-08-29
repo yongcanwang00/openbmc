@@ -25,7 +25,9 @@ PR = "r0"
 PV = "0.1"
 
 SRC_URI = "file://Makefile \
+           file://domfpga.c \
            file://fcmcpld.c \
+           file://iobfpga.c \
            file://pdbcpld.c \
            file://scmcpld.c \
            file://smbcpld.c \
@@ -43,4 +45,6 @@ KERNEL_MODULE_AUTOLOAD += "                     \
  scmcpld                                        \
  smbcpld                                        \
  pdbcpld                                        \
+ iobfpga                                        \
+ domfpga                                        \
 "

@@ -14,7 +14,6 @@ IMAGE_INSTALL += " \
   plat-utils \
   fan-util \
   fscd \
-  watchdog-ctrl \
   sensor-setup \
   ipmid \
   packagegroup-openbmc-base \
@@ -52,6 +51,7 @@ IMAGE_INSTALL += " \
   threshold-util \
   ncsid \
   vboot-utils \
+  sensordump \
   "
 
 IMAGE_FEATURES += " \

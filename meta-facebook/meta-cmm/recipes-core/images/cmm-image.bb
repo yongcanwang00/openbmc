@@ -23,6 +23,6 @@ IMAGE_INSTALL += " \
   libcpldupdate-dll-gpio \
   lldp-util \
   openbmc-utils \
-  watchdog-ctrl \
   wedge-eeprom \
+  weutil-dhcp-id \
   "

@@ -1,6 +1,6 @@
 # Copyright 2018-present Facebook. All Rights Reserved.
 
-inherit aspeed_uboot_image
+inherit kernel_fitimage
 
 require recipes-core/images/fb-openbmc-image.bb
 
@@ -19,12 +19,12 @@ IMAGE_INSTALL += " \
   ast-mdio \
   fan-ctrl \
   rackmon \
-  watchdog-ctrl \
   sensor-setup \
   usb-console \
   oob-nic \
   lldp-util \
   wedge-eeprom \
+  weutil-dhcp-id \
   kcsd \
   ipmid \
   po-eeprom \

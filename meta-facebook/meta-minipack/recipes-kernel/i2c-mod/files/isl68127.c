@@ -41,30 +41,42 @@
 #define ISL68127_PAGE_REG 0x00
 #define ISL68127_DELAY 10
 
-static ssize_t isl68127_vout_show(struct device *dev,
-                                    struct device_attribute *attr,
-                                    char *buf)
+static int isl_convert(struct device *dev, struct device_attribute *attr)
 {
   struct i2c_client *client = to_i2c_client(dev);
   i2c_dev_data_st *data = i2c_get_clientdata(client);
   i2c_sysfs_attr_st *i2c_attr = TO_I2C_SYSFS_ATTR(attr);
   const i2c_dev_attr_st *dev_attr = i2c_attr->isa_i2c_attr;
-  int result = -1;
+  int value = -1;
   int count = 10;
 
   mutex_lock(&data->idd_lock);
   i2c_smbus_write_byte_data(client, ISL68127_PAGE_REG, 0x01);
   msleep(ISL68127_DELAY);
 
-  while((result < 0 || result == 0xffff) && count--) {
-    result = i2c_smbus_read_word_data(client, (dev_attr->ida_reg));
+  while((value < 0 || value == 0xffff) && count--) {
+    value = i2c_smbus_read_word_data(client, (dev_attr->ida_reg));
   }
 
   mutex_unlock(&data->idd_lock);
 
-  if (result < 0) {
+  if (value < 0) {
     /* error case */
-    ISL68127_DEBUG("I2C read error, result: %d\n", result);
+    ISL68127_DEBUG("I2C read error, value: %d\n", value);
+    return -1;
+  }
+
+  return value;
+}
+
+static ssize_t isl68127_vol_show(struct device *dev,
+                                    struct device_attribute *attr,
+                                    char *buf)
+{
+  int result = -1;
+
+  result = isl_convert(dev, attr);
+  if (result < 0) {
     return -1;
   }
 
@@ -75,40 +87,74 @@ static ssize_t isl68127_iout_show(struct device *dev,
                                     struct device_attribute *attr,
                                     char *buf)
 {
+  int result = -1;
+
+  result = isl_convert(dev, attr);
+  if (result < 0) {
+    return -1;
+  }
+
+  return scnprintf(buf, PAGE_SIZE, "%d\n", (result * 1000) / 10);
+}
+
+static ssize_t isl68127_temp_show(struct device *dev,
+                                    struct device_attribute *attr,
+                                    char *buf)
+{
+  int result = -1;
+
+  result = isl_convert(dev, attr);
+  if (result < 0) {
+    return -1;
+  }
+
+  return scnprintf(buf, PAGE_SIZE, "%d\n", result * 1000);
+}
+
+static int parse_val(long val)
+{
+  if (val > 927 || val < 750)
+    return -1;
+
+  return 0;
+}
+
+static ssize_t isl68127_vol_write(struct device *dev,
+                                    struct device_attribute *attr,
+                                    const char *buf, size_t count)
+{
   struct i2c_client *client = to_i2c_client(dev);
   i2c_dev_data_st *data = i2c_get_clientdata(client);
   i2c_sysfs_attr_st *i2c_attr = TO_I2C_SYSFS_ATTR(attr);
   const i2c_dev_attr_st *dev_attr = i2c_attr->isa_i2c_attr;
-  int result = -1;
-  int count = 10;
+  int val;
+  
+  if (sscanf(buf, "%i", &val) <= 0) {
+    return -EINVAL;
+  }
+  if (parse_val(val))
+    return -EINVAL;
 
   mutex_lock(&data->idd_lock);
-  i2c_smbus_write_byte_data(client, ISL68127_PAGE_REG, 0x01);
-  msleep(ISL68127_DELAY);
-
-  while((result < 0 || result == 0xffff) && count--) {
-    result = i2c_smbus_read_word_data(client, (dev_attr->ida_reg));
-  }
-
+  i2c_smbus_write_word_data(client, dev_attr->ida_reg, val);
   mutex_unlock(&data->idd_lock);
-
-  if (result < 0) {
-    /* error case */
-    ISL68127_DEBUG("I2C read error, result: %d\n", result);
-    return -1;
-  }
-
-  result = (result * 1000) / 10;
-
-  return scnprintf(buf, PAGE_SIZE, "%d\n", result);
+  
+  return count;
 }
 
 
 static const i2c_dev_attr_st isl68127_attr_table[] = {
   {
+    "vo0_input",
+    NULL,
+    isl68127_vol_show,
+    isl68127_vol_write,
+    0x21, 0, 8,
+  },
+  {
     "in0_input",
     NULL,
-    isl68127_vout_show,
+    isl68127_vol_show,
     NULL,
     0x8b, 0, 8,
   },
@@ -120,8 +166,22 @@ static const i2c_dev_attr_st isl68127_attr_table[] = {
     0x8c, 0, 8,
   },
   {
+    "temp1_input",
+    NULL,
+    isl68127_temp_show,
+    NULL,
+    0x8d, 0, 8,
+  },
+  {
     "in0_label",
     "TH3 core Voltage",
+    i2c_dev_show_label,
+    NULL,
+    0x0, 0, 0,
+  },
+  {
+    "vo0_label",
+    "TH3 core Voltage for setting",
     i2c_dev_show_label,
     NULL,
     0x0, 0, 0,
@@ -133,9 +193,14 @@ static const i2c_dev_attr_st isl68127_attr_table[] = {
     NULL,
     0x0, 0, 0,
   },
+  {
+    "temp1_label",
+    "TH3 core Temp",
+    i2c_dev_show_label,
+    NULL,
+    0x0, 0, 0,
+  },
 };
-
-static i2c_dev_data_st isl68127_data;
 
 /*
  * isl68127 i2c addresses.
@@ -170,15 +235,24 @@ static int isl68127_probe(struct i2c_client *client,
                          const struct i2c_device_id *id)
 {
   int n_attrs = sizeof(isl68127_attr_table) / sizeof(isl68127_attr_table[0]);
+  struct device *dev = &client->dev;
+  i2c_dev_data_st *data;
 
   client->flags |= I2C_CLIENT_PEC;
-  return i2c_dev_sysfs_data_init(client, &isl68127_data,
+  data = devm_kzalloc(dev, sizeof(i2c_dev_data_st), GFP_KERNEL);
+  if (!data) {
+    return -ENOMEM;
+  }
+
+  return i2c_dev_sysfs_data_init(client, data,
                                  isl68127_attr_table, n_attrs);
 }
 
 static int isl68127_remove(struct i2c_client *client)
 {
-  i2c_dev_sysfs_data_clean(client, &isl68127_data);
+  i2c_dev_data_st *data = i2c_get_clientdata(client);
+  i2c_dev_sysfs_data_clean(client, data);
+
   return 0;
 }
 

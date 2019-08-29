@@ -51,9 +51,7 @@ static ssize_t ir3595_vout_show(struct device *dev,
     return -1;
   }
 
-  result = (result * 1000) / 2048;
-
-  return scnprintf(buf, PAGE_SIZE, "%d\n", result);
+  return scnprintf(buf, PAGE_SIZE, "%d\n", (result * 1000) / 2048);
 }
 
 static ssize_t ir3595_iout_show(struct device *dev,
@@ -70,9 +68,24 @@ static ssize_t ir3595_iout_show(struct device *dev,
     return -1;
   }
 
-  result = result * 2 * 1000;
+  return scnprintf(buf, PAGE_SIZE, "%d\n", result * 2 * 1000);
+}
 
-  return scnprintf(buf, PAGE_SIZE, "%d\n", result);
+static ssize_t ir3595_temp_show(struct device *dev,
+                                    struct device_attribute *attr,
+                                    char *buf)
+{
+  int result = -1;
+
+  result = i2c_dev_read_byte(dev, attr);
+
+  if (result < 0) {
+    /* error case */
+    IR3595_DEBUG("I2C read error, result: %d\n", result);
+    return -1;
+  }
+
+  return scnprintf(buf, PAGE_SIZE, "%d\n", result * 1000);
 }
 
 
@@ -92,6 +105,13 @@ static const i2c_dev_attr_st ir3595_attr_table[] = {
     0x94, 0, 8,
   },
   {
+    "temp1_input",
+    NULL,
+    ir3595_temp_show,
+    NULL,
+    0x9d, 0, 8,
+  },
+  {
     "in0_label",
     "TH3 serdes Voltage",
     i2c_dev_show_label,
@@ -105,9 +125,14 @@ static const i2c_dev_attr_st ir3595_attr_table[] = {
     NULL,
     0x0, 0, 0,
   },
+  {
+    "temp1_label",
+    "TH3 serdes Temp",
+    i2c_dev_show_label,
+    NULL,
+    0x0, 0, 0,
+  },
 };
-
-static i2c_dev_data_st ir3595_data;
 
 /*
  * ir3595 i2c addresses.
@@ -139,14 +164,23 @@ static int ir3595_probe(struct i2c_client *client,
                          const struct i2c_device_id *id)
 {
   int n_attrs = sizeof(ir3595_attr_table) / sizeof(ir3595_attr_table[0]);
+  struct device *dev = &client->dev;
+  i2c_dev_data_st *data;
 
-  return i2c_dev_sysfs_data_init(client, &ir3595_data,
+  data = devm_kzalloc(dev, sizeof(i2c_dev_data_st), GFP_KERNEL);
+  if (!data) {
+    return -ENOMEM;
+  }
+
+  return i2c_dev_sysfs_data_init(client, data,
                                  ir3595_attr_table, n_attrs);
 }
 
 static int ir3595_remove(struct i2c_client *client)
 {
-  i2c_dev_sysfs_data_clean(client, &ir3595_data);
+  i2c_dev_data_st *data = i2c_get_clientdata(client);
+  i2c_dev_sysfs_data_clean(client, data);
+
   return 0;
 }
 

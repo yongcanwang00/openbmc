@@ -49,11 +49,6 @@ extern "C" {
 
 #define NUM_SSD 15
 
-typedef struct _sensor_info_t {
-  bool valid;
-  sdr_full_t sdr;
-} sensor_info_t;
-
 // Sensors under PEB
 enum {
   PEB_SENSOR_ADC_P12V = 0x42,
@@ -173,7 +168,7 @@ int lightning_sensor_units(uint8_t fru, uint8_t sensor_num, char *units);
 int lightning_sensor_threshold(uint8_t fru, uint8_t sensor_num, uint8_t thresh, float *value);
 int lightning_sensor_sdr_init(uint8_t fru, sensor_info_t *sinfo);
 int lightning_sensor_read(uint8_t fru, uint8_t sensor_num, void *value);
-int lightning_sensor_poll_interval(uint8_t fru, uint8_t sensor_num, uint8_t* value);
+int lightning_sensor_poll_interval(uint8_t fru, uint8_t sensor_num, uint32_t* value);
 int lightning_sensor_get_airflow(float *airflow_cfm);
 
 #ifdef __cplusplus

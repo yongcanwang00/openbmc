@@ -389,11 +389,14 @@ static post_desc_t pdesc_error[] = {
   {0x22, "DPB voltage warning"},
   {0x25, "SCC current warning"},
   {0x26, "DPB current warning"},
+  {0x27, "SCC_I2C_device_loss"},
+  {0x28, "DPB_I2C_device_loss"},
   {0x29, "DPB_Temp1"},
   {0x30, "DPB_Temp2"},
   {0x31, "SCC_Expander_Temp"},
   {0x32, "SCC_IOC_Temp"},
   {0x33, "HDD X SMART temp. warning"},
+  {0x34, "Front_Panel_I2C_device_loss"},
   {0x36, "HDD0 fault"},
   {0x37, "HDD1 fault"},
   {0x38, "HDD2 fault"},
@@ -430,6 +433,7 @@ static post_desc_t pdesc_error[] = {
   {0x69, "HDD33 fault"},
   {0x70, "HDD34 fault"},
   {0x71, "HDD35 fault"},
+  {0x72, "HDD X fault sensed"},
   {0x86, "Fan1 Plug Out"},
   {0x87, "Fan2 Plug Out"},
   {0x88, "Fan3 Plug Out"},
@@ -565,7 +569,7 @@ int plat_get_me_status(uint8_t fru, char *status)
   char buf[256];
   unsigned char rlen;
   int ret;
- 
+
   buf[0] = NETFN_APP_REQ << 2;
   buf[1] = CMD_APP_GET_DEVICE_ID;
   ret = bic_me_xmit(fru, (uint8_t *)buf, 2, (uint8_t *)buf, &rlen);
@@ -587,6 +591,11 @@ int plat_get_board_id(char *id)
 }
 
 int plat_get_syscfg_text(uint8_t slot, char *text)
+{
+  return -1;
+}
+
+int plat_get_etra_fw_version(uint8_t slot_id, char *fw_text)
 {
   return -1;
 }

@@ -14,18 +14,13 @@
       "mTerm_status",
       "fc_present",
       "mb",
-      "modbus_registers",
       "psu_update",
       "firmware_info"
-    ],
-    "/api/sys/fc_present": [
-      "Not Applicable"
     ],
     "/api/sys/slotid": [
       "0"
     ],
     "/api/sys/sensors": [
-      "ast_adc-isa-0000",
       "tmp75-i2c-3-48",
       "tmp75-i2c-3-49",
       "fancpld-i2c-171-33",

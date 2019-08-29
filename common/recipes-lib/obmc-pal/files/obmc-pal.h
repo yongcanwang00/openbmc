@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <sys/file.h>
 #include <stdbool.h>
+#include <openbmc/ipmi.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,10 +33,11 @@ extern "C" {
 #define BIT(value, index) ((value >> index) & 1)
 #endif // BIT
 
-#define SETBIT(x, y)        (x | (1 << y))
-#define GETBIT(x, y)        ((x & (1 << y)) > y)
-#define CLEARBIT(x, y)      (x & (~(1 << y)))
-#define GETMASK(y)          (1 << y)
+#define SETBIT(x, y)        (x | (1ULL << y))
+#define GETBIT(x, y)        ((x & (1ULL << y)) > y)
+#define CLEARBIT(x, y)      (x & (~(1ULL << y)))
+#define GETMASK(y)          (1ULL << y)
+#define SETMASK(y)          (1ULL << y)
 
 // for threshold-util
 #define THRESHOLD_PATH     "/tmp/thresh-cache"
@@ -44,6 +46,10 @@ extern "C" {
 #define THRESHOLD_RE_FLAG  "/tmp/thresh-cache/%s_thresh-reinit"
 #define MAX_SENSOR_NUMBER  0xFF
 #define MAX_THERSH_LEN     256
+
+// for fru device
+#define DEV_ALL         0x0
+#define DEV_NONE        0xff
 
 /* To hold the sensor info and calculated threshold values from the SDR */
 /* To hold the sensor info and calculated threshold values from the SDR */
@@ -60,9 +66,19 @@ typedef struct {
   int curr_state;
   char name[32];
   char units[64];
-  uint8_t poll_interval; // poll interval for each fru's sensor
+  uint32_t poll_interval; // poll interval for each fru's sensor
 
 } thresh_sensor_t;
+
+typedef struct _sensor_info_t {
+  bool valid;
+  sdr_full_t sdr;
+} sensor_info_t;
+
+enum {
+  FRU_STATUS_BAD = 0,
+  FRU_STATUS_GOOD = 1,
+};
 
 enum {
   SENSORD_MODE_TESTING = 0x01,
@@ -82,6 +98,19 @@ enum {
   POWER_CFG_LPS,
   POWER_CFG_ON,
   POWER_CFG_UKNOWN,
+};
+
+//For power control/status
+enum {
+  SERVER_POWER_OFF,
+  SERVER_POWER_ON,
+  SERVER_POWER_CYCLE,
+  SERVER_POWER_RESET,
+  SERVER_GRACEFUL_SHUTDOWN,
+  SERVER_12V_OFF,
+  SERVER_12V_ON,
+  SERVER_12V_CYCLE,
+  SERVER_GLOBAL_RESET,
 };
 
 enum LED_LOW_ACTIVE{
@@ -126,6 +155,11 @@ enum {
   OS_BOOT = 0x1F,
 };
 
+enum {
+  UNIFIED_PCIE_ERR = 0x0,
+  UNIFIED_MEM_ERR  = 0x1,
+};
+
 // Enum for get the event sensor name in processing SEL
 enum {
   SYSTEM_EVENT = 0xE9,
@@ -137,6 +171,9 @@ enum {
   MACHINE_CHK_ERR = 0x40,
   PCIE_ERR = 0x41,
   IIO_ERR = 0x43,
+  SMN_ERR = 0x44, //FBND
+  USB_ERR = 0x45, //FBND
+  PSB_ERR = 0x46, //FBND
   MEMORY_ECC_ERR = 0X63,
   MEMORY_ERR_LOG_DIS = 0X87,
   PROCHOT_EXT = 0X51,
@@ -170,6 +207,7 @@ int pal_init_sensor_check(uint8_t fru, uint8_t snr_num, void *snr);
 int pal_set_last_boot_time(uint8_t slot, uint8_t *last_boot_time);
 int pal_get_last_boot_time(uint8_t slot, uint8_t *last_boot_time);
 void pal_get_chassis_status(uint8_t slot, uint8_t *req_data, uint8_t *res_data, uint8_t *res_len);
+int pal_chassis_control(uint8_t slot, uint8_t *req_data, uint8_t req_len);
 void pal_get_sys_intf_caps(uint8_t slot, uint8_t *req_data, uint8_t *res_data, uint8_t *res_len);
 int pal_get_80port_record(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len);
 int pal_set_boot_order(uint8_t slot, uint8_t *boot, uint8_t *res_data, uint8_t *res_len);
@@ -177,6 +215,7 @@ int pal_get_boot_order(uint8_t slot, uint8_t *req_data, uint8_t *boot, uint8_t *
 void pal_set_post_start(uint8_t slot, uint8_t *req_data, uint8_t *res_data, uint8_t *res_len);
 void pal_set_post_end(uint8_t slot, uint8_t *req_data, uint8_t *res_data, uint8_t *res_len);
 int pal_get_board_id(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len);
+int pal_parse_oem_unified_sel(uint8_t fru, uint8_t *sel, char *error_log);
 int pal_parse_oem_sel(uint8_t fru, uint8_t *sel, char *error_log);
 int pal_set_ppin_info(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len);
 int pal_bmc_err_enable(const char *error_item);
@@ -202,9 +241,12 @@ int pal_remove_fw_update_flag(void);
 int pal_get_fw_update_flag(void);
 int pal_get_platform_name(char *name);
 int pal_get_num_slots(uint8_t *num);
+int pal_get_num_devs(uint8_t slot, uint8_t *num);
 int pal_is_fru_prsnt(uint8_t fru, uint8_t *status);
 int pal_get_server_power(uint8_t slot_id, uint8_t *status);
 int pal_set_server_power(uint8_t slot_id, uint8_t cmd);
+int pal_get_device_power(uint8_t slot_id, uint8_t dev_id, uint8_t *status, uint8_t *type);
+int pal_set_device_power(uint8_t slot_id, uint8_t dev_id, uint8_t cmd);
 int pal_sled_cycle(void);
 int pal_post_handle(uint8_t slot, uint8_t status);
 int pal_set_rst_btn(uint8_t slot, uint8_t status);
@@ -212,17 +254,21 @@ int pal_set_led(uint8_t led, uint8_t status);
 int pal_set_hb_led(uint8_t status);
 int pal_get_fru_list(char *list);
 int pal_get_fru_id(char *fru_str, uint8_t *fru);
+int pal_get_dev_id(char *fru_str, uint8_t *fru);
 int pal_get_fru_name(uint8_t fru, char *name);
+int pal_get_dev_name(uint8_t fru, uint8_t dev, char *name);
 int pal_get_fruid_path(uint8_t fru, char *path);
+int pal_get_dev_fruid_path(uint8_t fru, uint8_t dev_id, char *path);
 int pal_get_fruid_eeprom_path(uint8_t fru, char *path);
 int pal_get_fruid_name(uint8_t fru, char *name);
 int pal_slotid_to_fruid(int slotid);
 int pal_get_fru_sensor_list(uint8_t fru, uint8_t **sensor_list, int *cnt);
-int pal_get_sensor_poll_interval(uint8_t fru, uint8_t sensor_num, uint8_t *value);
+int pal_get_sensor_poll_interval(uint8_t fru, uint8_t sensor_num, uint32_t *value);
 int pal_get_fru_discrete_list(uint8_t fru, uint8_t **sensor_list, int *cnt);
 int pal_fruid_write(uint8_t slot, char *path);
+int pal_dev_fruid_write(uint8_t fru, uint8_t dev_id, char *path);
 int pal_get_fru_devtty(uint8_t fru, char *devtty);
-int pal_sensor_check(uint8_t fru, uint8_t sensor_num);
+bool pal_sensor_is_cached(uint8_t fru, uint8_t sensor_num);
 int pal_sensor_read_raw(uint8_t fru, uint8_t sensor_num, void *value);
 int pal_sensor_threshold_flag(uint8_t fru, uint8_t snr_num, uint16_t *flag);
 int pal_alter_sensor_thresh_flag(uint8_t fru, uint8_t snr_num, uint16_t *flag);
@@ -260,6 +306,7 @@ void pal_update_ts_sled(void);
 int pal_handle_dcmi(uint8_t fru, uint8_t *tbuf, uint8_t tlen, uint8_t *rbuf, uint8_t *rlen);
 int pal_is_fru_ready(uint8_t fru, uint8_t *status);
 int pal_is_slot_server(uint8_t fru);
+int pal_is_slot_support_update(uint8_t fru);
 int pal_self_tray_location(uint8_t *value);
 void pal_log_clear(char *fru);
 int pal_get_dev_guid(uint8_t fru, char *guid);
@@ -282,6 +329,7 @@ bool pal_is_fw_update_ongoing(uint8_t fruid);
 bool pal_is_fw_update_ongoing_system(void);
 bool pal_is_crashdump_ongoing_system(void);
 bool pal_is_cplddump_ongoing_system(void);
+bool pal_can_change_power(uint8_t fru);
 int pal_set_fw_update_state(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len);
 int run_command(const char* cmd);
 int pal_get_restart_cause(uint8_t slot, uint8_t *restart_cause);
@@ -308,6 +356,26 @@ uint8_t pal_parse_ras_sel(uint8_t slot, uint8_t *sel, char *error_log);
 int pal_ignore_thresh(uint8_t fru, uint8_t snr_num, uint8_t thresh);
 int pal_set_fru_post(uint8_t fru, uint8_t value);
 uint8_t pal_add_imc_log(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len);
+uint8_t pal_add_cper_log(uint8_t slot, uint8_t *req_data, uint8_t req_len, uint8_t *res_data, uint8_t *res_len);
+int pal_set_tpm_physical_presence(uint8_t slot, uint8_t presence);
+int pal_get_tpm_physical_presence(uint8_t slot);
+int pal_create_TPMTimer(int fru);
+int pal_force_update_bic_fw(uint8_t slot_id, uint8_t comp, char *path);
+void pal_specific_plat_fan_check(bool status);
+int pal_get_sensor_util_timeout(uint8_t fru);
+bool pal_get_pair_fru(uint8_t slot_id, uint8_t *pair_fru);
+char *pal_get_pwn_list(void);
+char *pal_get_tach_list(void);
+int pal_get_pwm_cnt(void);
+int pal_get_tach_cnt(void);
+int pal_set_time_sync(uint8_t *req_data, uint8_t req_len);
+int pal_get_nic_fru_id(void);
+int pal_get_bmc_ipmb_slave_addr(uint16_t *slave_addr, uint8_t bus_id);
+int pal_is_mcu_ready(uint8_t bus);
+int pal_wait_mcu_ready2update(uint8_t bus);
+int pal_set_time_sync(uint8_t *req_data, uint8_t req_len);
+int pal_set_sdr_update_flag(uint8_t slot, uint8_t update);
+int pal_get_sdr_update_flag(uint8_t slot);
 #ifdef __cplusplus
 }
 #endif

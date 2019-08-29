@@ -34,14 +34,17 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <openbmc/ipmi.h>
+#include <openbmc/kv.h>
 #include <openbmc/pal.h>
+#include <openbmc/obmc-sensor.h>
 #include <sys/reboot.h>
 #include <openbmc/obmc-i2c.h>
+#include <openbmc/ipc.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include "sensor.h"
 
-
+#define MAX_REQUESTS 64
 #define SIZE_IANA_ID 3
 #define SIZE_GUID 16
 
@@ -183,7 +186,7 @@ static int length_check(unsigned char cmd_len, unsigned char req_len, unsigned c
   // req_len = cmd_len + 3 (payload_id, cmd and netfn)
   if( req_len != (cmd_len + IPMI_MN_REQ_HDR_SIZE) ){
     res->cc = CC_INVALID_LENGTH;
-    *res_len = 1;
+    *res_len = 0;
     return 1;
   }
   return 0;
@@ -252,6 +255,25 @@ chassis_get_status (unsigned char *request, unsigned char req_len,
   res->cc = CC_SUCCESS;
 
   pal_get_chassis_status(req->payload_id, req->data, res->data, res_len);
+}
+
+static void
+chassis_control(unsigned char *request, unsigned char req_len,
+                unsigned char *response, unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+  int ret;
+
+  ret = pal_chassis_control(req->payload_id, req->data, (req_len - 3));
+  if (ret == PAL_ENOTSUP) {
+    res->cc = CC_INVALID_CMD;
+  } else {
+    res->cc = ret;
+  }
+
+  *res_len = 0;
+  return;
 }
 
 // Set Power Restore Policy (IPMI/Section 28.8)
@@ -364,6 +386,9 @@ ipmi_handle_chassis (unsigned char *request, unsigned char req_len,
     case CMD_CHASSIS_GET_STATUS:
       chassis_get_status (request, req_len, response, res_len);
       break;
+    case CMD_CHASSIS_CONTROL:
+      chassis_control(request, req_len, response, res_len);
+      break;
     case CMD_CHASSIS_IDENTIFY:
       chassis_identify (request, req_len, response, res_len);
       break;
@@ -451,6 +476,40 @@ sensor_alert_immediate_msg(unsigned char *request, unsigned char req_len,
   res->cc = CC_SUCCESS;
 }
 
+// Set sensor reading (IPMI/Section 35.17)
+static void
+sensor_set_reading(unsigned char *request, unsigned char req_len,
+                      unsigned char *response, unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+  uint8_t sensor_num;
+  uint8_t flags;
+  uint8_t value;
+
+  // We do not support the command in full.
+  if (length_check(3, req_len, response, res_len))
+    return;
+  sensor_num = req->data[0];
+  flags = req->data[1];
+  value = req->data[2];
+  // We support the case only when flags == 1 (write given value
+  // to sensor reading byte ([1:0] - sensor reading operation))
+  if (flags != 0x1) {
+    res->cc = CC_NOT_SUPP_IN_CURR_STATE;
+    return;
+  }
+  // TODO. Allow BMC to specify the sensors which we allow
+  // to be written from the host.
+  if (sensor_cache_write(req->payload_id, sensor_num, true, (float)value)) {
+    res->cc = CC_UNSPECIFIED_ERROR;
+    return;
+  }
+  res->cc = CC_SUCCESS;
+}
+
+
+
 // Handle Sensor/Event Commands (IPMI/Section 29)
 static void
 ipmi_handle_sensor(unsigned char *request, unsigned char req_len,
@@ -468,6 +527,9 @@ ipmi_handle_sensor(unsigned char *request, unsigned char req_len,
       break;
     case CMD_SENSOR_ALERT_IMMEDIATE_MSG:
       sensor_alert_immediate_msg(request, req_len, response, res_len);
+      break;
+    case CMD_SENSOR_SET_SENSOR_READING:
+      sensor_set_reading(request, req_len, response, res_len);
       break;
     default:
       res->cc = CC_INVALID_CMD;
@@ -489,7 +551,7 @@ app_get_device_id (unsigned char *request, unsigned char req_len,
   unsigned char *data = &res->data[0];
   FILE *fp=NULL;
   int fv_major = 0x01, fv_minor = 0x03;
-  char buffer[32];
+  char buffer[64];
 
   if(length_check(0, req_len, response, res_len))
   {
@@ -499,9 +561,21 @@ app_get_device_id (unsigned char *request, unsigned char req_len,
   fp = fopen("/etc/issue","r");
   if (fp != NULL)
   {
-     if (fgets(buffer, sizeof(buffer), fp))
-         sscanf(buffer, "%*[^v]v%d.%d", &fv_major, &fv_minor);
-     fclose(fp);
+    if (fgets(buffer, sizeof(buffer), fp)) {
+      char *version = strstr(buffer, "-v");
+      if (version != NULL) {
+        sscanf(version, "-v%d.%d", &fv_major, &fv_minor);
+      }
+    }
+    fclose(fp);
+  }
+
+  // If we are using date based versioning, return
+  // the two digit year instead of the 4 digit year.
+  // Look out for year 2127 when this overflows the
+  // 7 bit allowance for major version :-)
+  if (fv_major > 2000) {
+    fv_major -= 2000;
   }
 
   res->cc = CC_SUCCESS;
@@ -1149,10 +1223,11 @@ storage_get_fruid_data(unsigned char *request, unsigned char *response,
   ipmi_res_t *res = (ipmi_res_t *) response;
   unsigned char *data = &res->data[0];
 
+  int fru_id = req->data[0];
   int offset = req->data[1] + (req->data[2] << 8);
   int count = req->data[3];
 
-  int ret = plat_fruid_data(req->payload_id, offset, count, &(res->data[1]));
+  int ret = plat_fruid_data(req->payload_id, fru_id, offset, count, &(res->data[1]));
   if (ret) {
     res->cc = CC_UNSPECIFIED_ERROR;
   } else {
@@ -1481,6 +1556,32 @@ storage_get_sel_time (unsigned char *response, unsigned char *res_len)
 }
 #endif
 
+#if defined(CONFIG_FBY2_ND)
+static void
+storage_set_sel_time (unsigned char *request, unsigned char *response, unsigned char req_len)
+{
+  ipmi_res_t *res = (ipmi_res_t *) response;
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  static uint8_t time_sync = 0;
+
+  if (req_len != 7) { // payload_id netfn_lun cmd data[4];
+    res->cc = CC_INVALID_LENGTH;
+  }
+
+  if (!time_sync) {
+    if (pal_set_time_sync(req->data,req_len-3)) {
+      res->cc = CC_UNSPECIFIED_ERROR;
+      return;
+    }
+    res->cc = CC_SUCCESS;
+    time_sync = 1;
+  } else {
+    res->cc = CC_NOT_SUPP_IN_CURR_STATE;
+  }
+  return;
+}
+#endif
+
 static void
 storage_get_sel_utc (unsigned char *response, unsigned char *res_len)
 {
@@ -1538,6 +1639,11 @@ ipmi_handle_storage (unsigned char *request, unsigned char req_len,
      // TBD: Respond only if BMC's time has synced with NTP
     case CMD_STORAGE_GET_SEL_TIME:
       storage_get_sel_time (response, res_len);
+      break;
+#endif
+#if defined(CONFIG_FBY2_ND)
+    case CMD_STORAGE_SET_SEL_TIME:
+      storage_set_sel_time (request, response, req_len);
       break;
 #endif
     case CMD_STORAGE_GET_SEL_UTC:
@@ -2036,7 +2142,7 @@ oem_q_set_proc_info (unsigned char *request, unsigned char req_len, unsigned cha
   if (req_len < 8 || req_len >= sizeof(payload) ||
       (req->data[4] >= numOfParam) ||
       (strlen(cpu_info_key[ (int) req->data[4]]) == 0))
-      
+
   {
     res->cc = CC_PARAM_OUT_OF_RANGE;
     *res_len = 0;
@@ -2233,6 +2339,69 @@ oem_q_get_drive_info(unsigned char *request, unsigned char req_len, unsigned cha
 }
 
 static void
+oem_q_set_smu_psp_ver(unsigned char *request, unsigned char req_len, unsigned char *response,
+       unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+  char key[100] = {0};
+  char payload[100] = {0};
+
+  if (req_len < 8)
+  {
+    res->cc = CC_PARAM_OUT_OF_RANGE;
+    *res_len = 0;
+    return;
+  }
+
+  if( (req->data[4] & 0x0f) == 0x01)
+    sprintf(key, "sys_config/fru%d_psp_ver", req->payload_id);
+  else if ((req->data[4] & 0x0f) == 0x02)
+    sprintf(key, "sys_config/fru%d_smu_ver", req->payload_id);
+
+  memcpy(payload, &req->data[5], req_len - 8);
+  if(kv_set(key, payload, req_len - 8, KV_FPERSIST)) {
+    res->cc = CC_UNSPECIFIED_ERROR;
+    *res_len = 0;
+    return;
+  }
+
+  res->cc = CC_SUCCESS;
+  *res_len = 0;
+}
+
+static void
+oem_q_get_smu_psp_ver(unsigned char *request, unsigned char req_len, unsigned char *response,
+       unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+  char key[100] = {0};
+  size_t ret = 0;
+
+  if (req_len < 5)
+  {
+    res->cc = CC_PARAM_OUT_OF_RANGE;
+    *res_len = 0;
+    return;
+  }
+
+  if( (req->data[4] & 0x0f) == 0x01)
+    sprintf(key, "sys_config/fru%d_psp_ver", req->payload_id);
+  else if ((req->data[4] & 0x0f) == 0x02)
+    sprintf(key, "sys_config/fru%d_smu_ver", req->payload_id);
+
+  if(kv_get(key, (char *)res->data, &ret, KV_FPERSIST) < 0) {
+    res->cc = CC_NOT_SUPP_IN_CURR_STATE;
+    *res_len = 0;
+    return;
+  }
+
+  res->cc = CC_SUCCESS;
+  *res_len = (unsigned char)ret;
+}
+
+static void
 oem_set_boot_order(unsigned char *request, unsigned char req_len,
                    unsigned char *response, unsigned char *res_len)
 {
@@ -2299,6 +2468,62 @@ oem_get_boot_order(unsigned char *request, unsigned char req_len,
   {
 	res->cc = CC_INVALID_PARAM;
   }
+}
+
+static void
+oem_set_tpm_presence(unsigned char *request, unsigned char req_len,
+                   unsigned char *response, unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+
+  int ret;
+  int slot_id = req->payload_id;
+  int presence = req->data[0];
+
+  if (presence == 0) {
+    ret = pal_set_tpm_physical_presence(slot_id,presence);
+    if (ret == 0) {
+      res->cc = CC_SUCCESS;
+    } else {
+      res->cc = CC_NOT_SUPP_IN_CURR_STATE;
+    }
+  } else {
+    // do not set tpm physical presence flag to 1
+    res->cc = CC_UNSPECIFIED_ERROR;
+  }
+}
+
+static void
+oem_get_tpm_presence(unsigned char *request, unsigned char req_len,
+                   unsigned char *response, unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+  int value;
+
+  value = pal_get_tpm_physical_presence(req->payload_id);
+  syslog(LOG_WARNING, "[%s] Get: %x\n", __func__, value);
+
+  if ((value != 0) && (value != 1)) {
+    res->cc = CC_UNSPECIFIED_ERROR;
+    *res_len = 0;
+    return;
+  }
+
+  // BMC auto-clear after BIOS retrieve it
+  // if (value == 1) {
+  //   int ret = pal_set_tpm_physical_presence(req->payload_id,0);
+  //   if (ret != 0) {
+  //     res->cc = CC_UNSPECIFIED_ERROR;
+  //     *res_len = 0;
+  //     return;
+  //   }
+  // }
+
+  res->cc = CC_SUCCESS;
+  res->data[0] = value;
+  *res_len = 1;
 }
 
 static void
@@ -2684,9 +2909,16 @@ oem_sled_ac_cycle(unsigned char *request, unsigned char req_len,
 {
   ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
   ipmi_res_t *res = (ipmi_res_t *) response;
+  int ret;
 
-  res->cc = pal_sled_ac_cycle(req->payload_id, req->data, req_len, res->data, res_len);
+  ret = pal_sled_ac_cycle(req->payload_id, req->data, (req_len - 3), res->data, res_len);
+  if (ret == PAL_ENOTSUP) {
+    res->cc = CC_INVALID_CMD;
+  } else {
+    res->cc = ret;
+  }
 
+  *res_len = 0;
   return;
 }
 
@@ -2926,6 +3158,48 @@ oem_set_pcie_port_config(unsigned char *request, unsigned char req_len,
 }
 
 static void
+oem_add_cper_log(unsigned char *request, unsigned char req_len,
+            unsigned char *response, unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+
+  *res_len = 0;
+
+  res->cc = pal_add_cper_log(req->payload_id, req->data, req_len, res->data, res_len);
+
+  return;
+}
+
+static void
+oem_set_m2_info (unsigned char *request, unsigned char req_len, unsigned char *response,
+                 unsigned char *res_len)
+{
+  ipmi_mn_req_t *req = (ipmi_mn_req_t *) request;
+  ipmi_res_t *res = (ipmi_res_t *) response;
+  char key[100] = {0};
+  char payload[100] = {0};
+  unsigned char cmd_len = 8;
+
+  if (length_check(cmd_len, req_len, response, res_len))
+    return;
+
+  sprintf(key, "sys_config/fru%d_m2_%d_info", req->payload_id, req->data[0]);
+
+  memcpy(payload, &req->data[1], req_len - 4);
+  if(kv_set(key, payload, req_len - 4, KV_FPERSIST)) {
+    res->cc = CC_UNSPECIFIED_ERROR;
+    *res_len = 0;
+    return;
+  }
+
+  res->cc = CC_SUCCESS;
+  *res_len = 0;
+
+  return;
+}
+
+static void
 oem_bbv_power_cycle ( unsigned char *request, unsigned char req_len,
                   unsigned char *response, unsigned char *res_len)
 {
@@ -3001,10 +3275,19 @@ ipmi_handle_oem (unsigned char *request, unsigned char req_len,
       oem_get_dimm_info(request, req_len, response, res_len);
       break;
     case CMD_OEM_SET_BOOT_ORDER:
+      if(length_check(SIZE_BOOT_ORDER, req_len, response, res_len)) {
+        break;
+      }
       oem_set_boot_order(request, req_len, response, res_len);
       break;
     case CMD_OEM_GET_BOOT_ORDER:
       oem_get_boot_order(request, req_len, response, res_len);
+      break;
+    case CMD_OEM_SET_TPM_PRESENCE:
+      oem_set_tpm_presence(request, req_len, response, res_len);
+      break;
+    case CMD_OEM_GET_TPM_PRESENCE:
+      oem_get_tpm_presence(request, req_len, response, res_len);
       break;
     case CMD_OEM_SET_PPR:
     case CMD_OEM_LEGACY_SET_PPR:
@@ -3075,6 +3358,12 @@ ipmi_handle_oem (unsigned char *request, unsigned char req_len,
     case CMD_OEM_BBV_POWER_CYCLE:
       oem_bbv_power_cycle(request, req_len, response, res_len);
       break;
+    case CMD_OEM_ADD_CPER_LOG:
+      oem_add_cper_log(request, req_len, response, res_len);
+      break;
+    case CMD_OEM_SET_M2_INFO:
+      oem_set_m2_info(request, req_len, response, res_len);
+      break;
     default:
       res->cc = CC_INVALID_CMD;
       break;
@@ -3132,6 +3421,12 @@ ipmi_handle_oem_q (unsigned char *request, unsigned char req_len,
       break;
     case CMD_OEM_Q_GET_DRIVE_INFO:
       oem_q_get_drive_info (request, req_len, response, res_len);
+      break;
+    case CMD_OEM_Q_SET_SMU_PSP_VER:
+      oem_q_set_smu_psp_ver (request, req_len, response, res_len);
+      break;
+    case CMD_OEM_Q_GET_SMU_PSP_VER:
+      oem_q_get_smu_psp_ver (request, req_len, response, res_len);
       break;
     default:
       res->cc = CC_INVALID_CMD;
@@ -3202,7 +3497,7 @@ oem_1s_handle_ipmb_req(unsigned char *request, unsigned char req_len,
     case BIC_INTF_KCS:
     case BIC_INTF_KCS_SMM:
     case BIC_INTF_SSIF:
-    case BIC_INTF_SSIF_SMM:
+    case BIC_INTF_IMC:
       oem_1s_handle_ipmb_kcs(request, req_len, response, res_len);
       break;
     default:
@@ -3631,41 +3926,30 @@ ipmi_handle (unsigned char *request, unsigned char req_len,
   return;
 }
 
-void
-*conn_handler(void *socket_desc) {
-  int *p_sock = (int*)socket_desc;
-  int sock = *p_sock;
-  int n;
+int
+conn_handler(client_t *cli) {
   unsigned char req_buf[MAX_IPMI_MSG_SIZE];
   unsigned char res_buf[MAX_IPMI_MSG_SIZE];
-  unsigned short res_len = 0;
-  struct timeval tv;
-  int rc = 0;
+  size_t req_len = MAX_IPMI_MSG_SIZE, res_len = 0;
 
-  // setup timeout for receving on socket
-  tv.tv_sec = TIMEOUT_IPMI;
-  tv.tv_usec = 0;
+  memset(req_buf, 0, sizeof(req_buf));
+  memset(res_buf, 0, sizeof(res_buf));
 
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
-
-  n = recv (sock, req_buf, sizeof(req_buf), 0);
-  rc = errno;
-  if (n <= 0) {
-      syslog(LOG_WARNING, "ipmid: recv() failed with %d, errno: %d\n", n, rc);
-      goto conn_cleanup;
+  if (ipc_recv_req(cli, req_buf, &req_len, TIMEOUT_IPMI)) {
+    syslog(LOG_WARNING, "ipmid: recv() failed\n");
+    return -1;
   }
 
-  ipmi_handle(req_buf, n, res_buf, (unsigned char*)&res_len);
+  ipmi_handle(req_buf, (unsigned char)req_len, res_buf, (unsigned char*)&res_len);
 
-  if (send (sock, res_buf, res_len, 0) < 0) {
+  if (res_len == 0) {
+    return -1;
+  }
+
+  if(ipc_send_resp(cli, res_buf, res_len)) {
     syslog(LOG_WARNING, "ipmid: send() failed\n");
+    return -1;
   }
-
-conn_cleanup:
-  close(sock);
-  free(p_sock);
-
-  pthread_exit(NULL);
   return 0;
 }
 
@@ -3683,7 +3967,7 @@ wdt_timer (void *arg) {
 
       // Check if power off
       ret = pal_get_server_power(wdt->slot, &status);
-      if ((ret >= 0) && (status == SERVER_POWER_OFF)) {
+      if ((ret >= 0) && (status != SERVER_POWER_ON)) {
         wdt->run = 0;
         pthread_mutex_unlock(&wdt->mutex);
         continue;
@@ -3759,11 +4043,8 @@ wdt_timer (void *arg) {
 int
 main (void)
 {
-  int s, s2, fru, len;
-  struct sockaddr_un local, remote;
+  int fru;
   pthread_t tid;
-  int *p_s2;
-  int rc = 0;
   uint8_t max_slot_num = 0;
 
   //daemon(1, 1);
@@ -3790,6 +4071,8 @@ main (void)
   fru = 1;
 
   while(fru <= max_slot_num){
+    //tpm
+    pal_create_TPMTimer(fru);
     struct watchdog_data *wdt_data = calloc(1, sizeof(struct watchdog_data));
     if (!wdt_data) {
       syslog(LOG_WARNING, "ipmid: allocation wdt info failed!\n");
@@ -3807,54 +4090,10 @@ main (void)
     fru++;
   }
 
-  if ((s = socket (AF_UNIX, SOCK_STREAM, 0)) == -1)
-  {
-    syslog(LOG_WARNING, "ipmid: socket() failed\n");
-    exit (1);
+  if (ipc_start_svc(SOCK_PATH_IPMI, conn_handler, MAX_REQUESTS, NULL, &tid) == 0) {
+    pthread_join(tid, NULL);
   }
 
-  local.sun_family = AF_UNIX;
-  strcpy (local.sun_path, SOCK_PATH_IPMI);
-  unlink (local.sun_path);
-  len = strlen (local.sun_path) + sizeof (local.sun_family);
-  if (bind (s, (struct sockaddr *) &local, len) == -1)
-  {
-    syslog(LOG_WARNING, "ipmid: bind() failed\n");
-    exit (1);
-  }
-
-  if (listen (s, 5) == -1)
-  {
-    syslog(LOG_WARNING, "ipmid: listen() failed\n");
-    exit (1);
-  }
-
-  while(1) {
-    size_t t = sizeof (remote);
-    // TODO: seen accept() call fails and need further debug
-    if ((s2 = accept (s, (struct sockaddr *) &remote, &t)) < 0) {
-      rc = errno;
-      syslog(LOG_WARNING, "ipmid: accept() failed with ret: %x, errno: %x\n", s2, rc);
-      sleep(5);
-      continue;
-    }
-
-    // Creating a worker thread to handle the request
-    // TODO: Need to monitor the server performance with higher load and
-    // see if we need to create pre-defined number of workers and schedule
-    // the requests among them.
-    p_s2 = malloc(sizeof(int));
-    *p_s2 = s2;
-    if (pthread_create(&tid, NULL, conn_handler, (void*) p_s2) < 0) {
-        syslog(LOG_WARNING, "ipmid: pthread_create failed\n");
-        close(s2);
-        continue;
-    }
-
-    pthread_detach(tid);
-  }
-
-  close(s);
 
   pthread_mutex_destroy(&m_chassis);
   pthread_mutex_destroy(&m_sensor);

@@ -15,22 +15,27 @@
 # 51 Franklin Street, Fifth Floor,
 # Boston, MA 02110-1301 USA
 
-SUMMARY = "Log util functions"
-DESCRIPTION = "some macros to log"
+SUMMARY = "OpenBMC logging library"
+DESCRIPTION = "Macros and functions for logging control"
 SECTION = "dev"
 PR = "r1"
 LICENSE = "GPLv2"
 LIC_FILES_CHKSUM = "file://log.h;beginline=4;endline=16;md5=da35978751a9d71b73679307c4d296ec"
 
-SRC_URI += "file://src \
+BBCLASSEXTEND = "native"
+S = "${WORKDIR}"
+SRC_URI += "file://log.h \
+            file://log.c \
+            file://Makefile \
            "
 
-S = "${WORKDIR}/src"
-
 do_install() {
-  # common lib and include files
-  install -d ${D}${includedir}/openbmc
-  install -m 0644 log.h ${D}${includedir}/openbmc/log.h
+    install -d ${D}${includedir}/openbmc
+    install -m 0644 log.h ${D}${includedir}/openbmc/log.h
+
+    install -d ${D}${libdir}
+    install -m 0644 liblog.so ${D}${libdir}/liblog.so
 }
 
+FILES_${PN} = "${libdir}/liblog.so"
 FILES_${PN}-dev = "${includedir}/openbmc/log.h"

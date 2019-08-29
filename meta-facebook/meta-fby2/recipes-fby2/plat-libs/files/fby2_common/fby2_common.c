@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <unistd.h>
 #include <math.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -32,12 +33,31 @@
 #include <openbmc/kv.h>
 #include "fby2_common.h"
 
+#define BIT(value, index) ((value >> index) & 1)
+
 #define CRASHDUMP_BIN       "/usr/local/bin/autodump.sh"
 #define CRASHDUMP_FILE      "/mnt/data/crashdump_"
 #define CRASHDUMP_PID       "/var/run/autodump%d.pid"
 
 #define CPLDDUMP_BIN       "/usr/local/bin/cpld-dump.sh"
 #define CPLDDUMP_PID       "/var/run/cplddump%d.pid"
+
+#define SBOOT_CPLDDUMP_BIN       "/usr/local/bin/sboot-cpld-dump.sh"
+#define SBOOT_CPLDDUMP_PID       "/var/run/sbootcplddump%d.pid"
+
+#define GPIO_VAL "/sys/class/gpio/gpio%d/value"
+#define SPB_REV_FILE "/tmp/spb_rev"
+
+#define FAN_CONFIG_FILE "/tmp/fan_config"
+
+#define PTHREAD_SET_CANCEL_ENABLE() do {                                          \
+  if (pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0) {                 \
+    syslog(LOG_CRIT, "%s: pthread_setcancelstate failed: %d\n", __func__, errno); \
+  }                                                                               \
+  if (pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL) != 0) {            \
+    syslog(LOG_CRIT, "%s: pthread_setcanceltype failed: %d\n", __func__, errno);  \
+  }                                                                               \
+} while(0)
 
 struct threadinfo {
   uint8_t is_running;
@@ -48,6 +68,8 @@ struct threadinfo {
 static struct threadinfo t_dump[MAX_NUM_FRUS] = {0, };
 
 static struct threadinfo t_cpld_dump[MAX_NUM_FRUS] = {0, };
+
+static struct threadinfo t_sboot_cpld_dump[MAX_NUM_FRUS] = {0, };
 
 int
 fby2_common_fru_name(uint8_t fru, char *str) {
@@ -75,6 +97,10 @@ fby2_common_fru_name(uint8_t fru, char *str) {
 
     case FRU_NIC:
       sprintf(str, "nic");
+      break;
+
+    case FRU_BMC:
+      sprintf(str, "bmc");
       break;
 
     default:
@@ -116,11 +142,51 @@ fby2_common_fru_id(char *str, uint8_t *fru) {
   return 0;
 }
 
+int
+fby2_common_dev_id(char *str, uint8_t *dev) {
+
+  if (!strcmp(str, "all")) {
+    *dev = 0;
+  } else if (!strcmp(str, "device0")) {
+    *dev = 1;
+  } else if (!strcmp(str, "device1")) {
+    *dev = 2;
+  } else if (!strcmp(str, "device2")) {
+    *dev = 3;
+  } else if (!strcmp(str, "device3")) {
+    *dev = 4;
+  } else if (!strcmp(str, "device4")) {
+    *dev = 5;
+  } else if (!strcmp(str, "device5")) {
+    *dev = 6;
+  } else if (!strcmp(str, "device6")) {
+    *dev = 7;
+  } else if (!strcmp(str, "device7")) {
+    *dev = 8;
+  } else if (!strcmp(str, "device8")) {
+    *dev = 9;
+  } else if (!strcmp(str, "device9")) {
+    *dev = 10;
+  } else if (!strcmp(str, "device10")) {
+    *dev = 11;
+  } else if (!strcmp(str, "device11")) {
+    *dev = 12;
+  } else {
+#ifdef DEBUG
+    syslog(LOG_WARNING, "fby2_common_dev_id: Wrong fru id");
+#endif
+    return -1;
+  }
+
+  return 0;
+}
+
 static int
 trigger_hpr(uint8_t fru) {
   char key[MAX_KEY_LEN];
   char value[MAX_VALUE_LEN] = {0};
 
+#ifndef CONFIG_FBY2_ND
   switch (fru) {
     case FRU_SLOT1:
     case FRU_SLOT2:
@@ -132,8 +198,94 @@ trigger_hpr(uint8_t fru) {
       }
       return 1;
   }
-
+#endif
   return 0;
+}
+
+static int
+read_device(const char *device, int *value) {
+  FILE *fp;
+  int rc;
+
+  fp = fopen(device, "r");
+  if (!fp) {
+    int err = errno;
+#ifdef DEBUG
+    syslog(LOG_INFO, "failed to open device %s", device);
+#endif
+    return err;
+  }
+
+  rc = fscanf(fp, "%d", value);
+  fclose(fp);
+  if (rc != 1) {
+#ifdef DEBUG
+    syslog(LOG_INFO, "failed to read device %s", device);
+#endif
+    return ENOENT;
+  } else {
+    return 0;
+  }
+}
+
+static uint8_t
+_get_spb_rev(void) {
+  int rev;
+
+  if (read_device(SPB_REV_FILE, &rev)) {
+    printf("Get spb revision failed\n");
+    return -1;
+  }
+
+  return rev;
+}
+
+/* Baseboard        Board_ID Rev_ID[2] Rev_ID[1] Rev_ID[0]
+   Test board PoC       1       0         0         0
+   Test board EVT       1       0         0         1
+   YV2 PoC              0       0         0         0
+   YV2 EVT              0       0         0         1
+   YV2 DVT              0       0         1         0
+   YV2 PVT              0       0         1         1
+   YV2.50               1       1         X         X
+*/
+int
+fby2_common_get_spb_type() {
+   int spb_type;
+   int board_id;
+   uint8_t rev;
+   char path[64] = {0};
+
+   memset(path, 0, sizeof(path));
+   // Board_ID
+   sprintf(path, GPIO_VAL, GPIO_BOARD_ID);
+   if (read_device(path, &board_id)) {
+      return -1;
+   }
+
+   // Rev_ID
+   rev = _get_spb_rev();
+
+   if (1 == board_id && BIT(rev, 2)) {
+     spb_type = TYPE_SPB_YV250;
+   } else {
+     spb_type = TYPE_SPB_YV2;
+   }
+
+   return spb_type;
+}
+
+int
+fby2_common_get_fan_type() {
+   int fan_type;
+   char path[64] = {0};
+
+   sprintf(path, GPIO_VAL, GPIO_DUAL_FAN_DETECT);
+   if (read_device(path, &fan_type)) {
+      return -1;
+   }
+
+   return fan_type;
 }
 
 static void *
@@ -143,13 +295,11 @@ generate_dump(void *arg) {
   char cmd[128];
   char fname[128];
   char fruname[16];
-  int rc;
   bool ierr;
 
   // Usually the pthread cancel state are enable by default but
   // here we explicitly would like to enable them
-  rc = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-  rc = pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+  PTHREAD_SET_CANCEL_ENABLE();
 
   fby2_common_fru_name(fru, fruname);
 
@@ -172,6 +322,7 @@ generate_dump(void *arg) {
     sprintf(cmd, "/usr/local/bin/power-util %s reset", fruname);
     system(cmd);
   }
+  pthread_exit(NULL);
 }
 
 static void *
@@ -181,12 +332,10 @@ second_dwr_dump(void *arg) {
   char cmd[128];
   char fname[128];
   char fruname[16];
-  int rc;
 
   // Usually the pthread cancel state are enable by default but
   // here we explicitly would like to enable them
-  rc = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-  rc = pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+  PTHREAD_SET_CANCEL_ENABLE();
 
   fby2_common_fru_name(fru, fruname);
 
@@ -206,6 +355,7 @@ second_dwr_dump(void *arg) {
 
   t_dump[fru-1].is_running = 0;
 
+  pthread_exit(NULL);
 }
 
 int
@@ -336,12 +486,10 @@ generate_cpld_dump(void *arg) {
   char cmd[128];
   char fname[128];
   char fruname[16];
-  int rc;
 
   // Usually the pthread cancel state are enable by default but
   // here we explicitly would like to enable them
-  rc = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-  rc = pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+  PTHREAD_SET_CANCEL_ENABLE();
 
   fby2_common_fru_name(fru, fruname);
 
@@ -360,6 +508,39 @@ generate_cpld_dump(void *arg) {
 
   t_cpld_dump[fru-1].is_running = 0;
 
+  pthread_exit(NULL);
+}
+
+void *
+generate_sboot_cpld_dump(void *arg) {
+
+  uint8_t fru = *(uint8_t *) arg;
+  char cmd[128];
+  char fname[128];
+  char fruname[16];
+
+  // Usually the pthread cancel state are enable by default but
+  // here we explicitly would like to enable them
+  PTHREAD_SET_CANCEL_ENABLE();
+
+  fby2_common_fru_name(fru, fruname);
+
+  memset(fname, 0, sizeof(fname));
+  sprintf(fname, SBOOT_CPLDDUMP_PID, fru);
+  if (access(fname, F_OK) == 0) {
+    memset(cmd, 0, sizeof(cmd));
+    sprintf(cmd,"rm %s",fname);
+    system(cmd);
+  }
+
+  // Execute automatic CPLD dump for slow boot
+  memset(cmd, 0, 128);
+  sprintf(cmd, "%s %s", SBOOT_CPLDDUMP_BIN, fruname);
+  system(cmd);
+
+  t_sboot_cpld_dump[fru-1].is_running = 0;
+
+  pthread_exit(NULL);
 }
 
 int
@@ -371,7 +552,7 @@ fby2_common_cpld_dump(uint8_t fru) {
   // Check if the CPLD dump script exist
   if (access(CPLDDUMP_BIN, F_OK) == -1) {
     syslog(LOG_CRIT, "fby2_common_cpld_dump:CPLD dump for FRU: %d failed : "
-        "cpld dump binary is not preset", fru);
+        "cpld dump binary is not present", fru);
     return 0;
   }
 
@@ -405,4 +586,63 @@ fby2_common_cpld_dump(uint8_t fru) {
   syslog(LOG_INFO, "fby2_common_cpld_dump: CPLD dump for FRU: %d is being generated.", fru);
 
   return 0;
+}
+
+int
+fby2_common_sboot_cpld_dump(uint8_t fru) {
+
+  int ret;
+  char cmd[100];
+
+  // Check if the CPLD dump script exist for slow boot
+  if (access(SBOOT_CPLDDUMP_BIN, F_OK) == -1) {
+    syslog(LOG_CRIT, "fby2_common_sboot_cpld_dump:CPLD dump for FRU: %d failed : "
+        "cpld dump binary for slow boot is not present", fru);
+    return 0;
+  }
+
+  // Check if CPLD dump of slow boot for that fru is already running.
+  // If yes, kill that thread and start a new one.
+  if (t_sboot_cpld_dump[fru-1].is_running) {
+    ret = pthread_cancel(t_sboot_cpld_dump[fru-1].pt);
+    if (ret == ESRCH) {
+      syslog(LOG_INFO, "fby2_common_sboot_cpld_dump: No CPLD dump pthread exists for slow boot");
+    } else {
+      pthread_join(t_sboot_cpld_dump[fru-1].pt, NULL);
+      sprintf(cmd, "ps | grep '{sboot-cpld-dump}' | grep 'slot%d' | awk '{print $1}'| xargs kill", fru);
+      system(cmd);
+#ifdef DEBUG
+      syslog(LOG_INFO, "fby2_common_sboot_cpld_dump: Previous CPLD dump thread is cancelled for slow boot");
+#endif
+    }
+  }
+
+  // Start a thread to generate the CPLD dump for slow boot
+  t_sboot_cpld_dump[fru-1].fru = fru;
+
+  if (pthread_create(&(t_sboot_cpld_dump[fru-1].pt), NULL, generate_sboot_cpld_dump, (void*) &t_sboot_cpld_dump[fru-1].fru) < 0) {
+    syslog(LOG_WARNING, "fby2_common_sboot_cpld_dump: pthread_create for"
+      " FRU %d failed\n", fru);
+    return -1;
+  }
+
+  t_sboot_cpld_dump[fru-1].is_running = 1;
+
+  syslog(LOG_INFO, "fby2_common_sboot_cpld_dump: CPLD dump for slow boot for FRU: %d is being generated.", fru);
+
+  return 0;
+}
+
+int
+fby2_common_get_fan_config(void) {
+  FILE *fp;
+  int type = 0;
+
+  fp = fopen(FAN_CONFIG_FILE, "r");
+  if (fp != NULL) {
+    fscanf(fp, "%d", &type);
+    fclose(fp);
+  }
+
+  return (type)?TYPE_15K_FAN:TYPE_10K_FAN;
 }

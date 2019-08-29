@@ -37,14 +37,6 @@ extern "C" {
 
 #define MAX_RETRY       5
 
-#define FRU_STATUS_GOOD   1
-#define FRU_STATUS_BAD    0
-
-#define SETBIT(x, y)        (x | (1 << y))
-#define GETBIT(x, y)        ((x & (1 << y)) > y)
-#define CLEARBIT(x, y)      (x & (~(1 << y)))
-#define GETMASK(y)          (1 << y)
-
 #define MAX_NODES 1
 #define MAX_FAN_LED_NUM 6
 #define FAN_INDEX_BASE 1
@@ -62,8 +54,6 @@ extern "C" {
 #define ERR_CODE_PEER_TRAY_PULL_OUT 0x5E
 #define ERR_CODE_CPU 0x5F
 #define ERR_CODE_MEM 0x60
-#define ERR_CODE_ECC_RECOVERABLE 0x61
-#define ERR_CODE_ECC_UNRECOVERABLE 0x62
 
 #define HB_INTERVAL 500
 
@@ -90,16 +80,6 @@ extern const char pal_server_list[];
 enum {
   USB_MUX_OFF,
   USB_MUX_ON,
-};
-
-enum {
-  SERVER_POWER_OFF,
-  SERVER_POWER_ON,
-  SERVER_POWER_CYCLE,
-  SERVER_GRACEFUL_SHUTDOWN,
-  SERVER_12V_OFF,
-  SERVER_12V_ON,
-  SERVER_12V_CYCLE,
 };
 
 enum {
@@ -175,7 +155,6 @@ int pal_sensor_read_raw(uint8_t fru, uint8_t sensor_num, void *value);
 int pal_get_sensor_name(uint8_t fru, uint8_t sensor_num, char *name);
 int pal_get_sensor_threshold(uint8_t fru, uint8_t sensor_num, uint8_t thresh,
     void *value);
-int pal_get_sensor_poll_interval(uint8_t fru, uint8_t sensor_num, uint8_t *value);
 int pal_get_key_value(char *key, char *value);
 int pal_set_key_value(char *key, char *value);
 int pal_set_def_key_value();
@@ -198,7 +177,7 @@ int pal_fan_recovered_handle(int fan_num);
 int pal_self_tray_location(uint8_t *value);
 int pal_self_tray_insertion(uint8_t *value);
 int pal_peer_tray_insertion(uint8_t *value);
-int pal_get_tray_location(char *self_name, uint8_t self_len, char *peer_name, uint8_t peer_len);
+int pal_get_tray_location(char *self_name, uint8_t self_len, char *peer_name, uint8_t peer_len, uint8_t *peer_tray_pwr);
 void pal_log_clear(char *fru);
 void pal_sensor_assert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh);
 void pal_sensor_deassert_handle(uint8_t fru, uint8_t snr_num, float val, uint8_t thresh);

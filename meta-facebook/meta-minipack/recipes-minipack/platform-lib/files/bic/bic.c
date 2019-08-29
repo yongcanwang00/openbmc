@@ -103,9 +103,10 @@ bic_ipmb_wrapper(uint8_t slot_id, uint8_t netfn, uint8_t cmd,
   tlen = IPMB_HDR_SIZE + IPMI_REQ_HDR_SIZE + txlen;
 
   // Invoke IPMB library handler
-  lib_ipmb_handle(bus_id, tbuf, tlen, rbuf, &rlen);
-
-  if (rlen == 0) {
+  if (lib_ipmb_handle(bus_id, tbuf, tlen, rbuf, &rlen) != 0) {
+    return -1;
+  } else if (rlen == 0) {
+    errno = EPROTO;
 #ifdef DEBUG
     syslog(LOG_DEBUG, "bic_ipmb_wrapper: Zero bytes received\n");
 #endif
@@ -114,8 +115,8 @@ bic_ipmb_wrapper(uint8_t slot_id, uint8_t netfn, uint8_t cmd,
 
   // Handle IPMB response
   res  = (ipmb_res_t*) rbuf;
-
   if (res->cc) {
+    errno = EBADMSG;
 #ifdef DEBUG
     syslog(LOG_ERR, "bic_ipmb_wrapper: Completion Code: 0x%X\n", res->cc);
 #endif
@@ -150,9 +151,10 @@ bic_get_gpio_config(uint8_t slot_id, uint8_t gpio,
 
   ret = bic_ipmb_wrapper(slot_id, NETFN_OEM_1S_REQ, 
                          CMD_OEM_1S_GET_GPIO_CONFIG, tbuf, tlen, rbuf, &rlen);
-
-  // Ignore IANA ID
-  *(uint8_t *) gpio_config = rbuf[3];
+  if (ret == 0) {
+    // Ignore IANA ID
+    *(uint8_t *) gpio_config = rbuf[3];
+  }
 
   return ret;
 }
@@ -167,9 +169,10 @@ bic_get_gpio(uint8_t slot_id, bic_gpio_t *gpio) {
 
   ret = bic_ipmb_wrapper(slot_id, NETFN_OEM_1S_REQ, 
                          CMD_OEM_1S_GET_GPIO, tbuf, 0x03, rbuf, &rlen);
-
-  // Ignore first 3 bytes of IANA ID
-  memcpy((uint8_t*) gpio, &rbuf[3], 4);
+  if (ret == 0) {
+    // Ignore first 3 bytes of IANA ID
+    memcpy((uint8_t*) gpio, &rbuf[3], 4);
+  }
 
   return ret;
 }
@@ -196,6 +199,7 @@ bic_set_gpio(uint8_t slot_id, uint8_t gpio, uint8_t value) {
 
   // Check for boundary conditions
   if (gpio > GPIO_MAX) {
+    errno = EINVAL;
     return -1;
   }
 
@@ -248,8 +252,10 @@ bic_get_config(uint8_t slot_id, bic_config_t *cfg) {
 
   ret = bic_ipmb_wrapper(slot_id, NETFN_OEM_1S_REQ, CMD_OEM_1S_GET_CONFIG,
               tbuf, 0x03, rbuf, &rlen);
-  // Ignore IANA ID
-  *(uint8_t *) cfg = rbuf[3];
+  if (ret == 0) {
+    // Ignore IANA ID
+    *(uint8_t *) cfg = rbuf[3];
+  }
 
   return ret;
 }
@@ -279,11 +285,11 @@ bic_get_post_buf(uint8_t slot_id, uint8_t *buf, uint8_t *len) {
 
   ret = bic_ipmb_wrapper(slot_id, NETFN_OEM_1S_REQ, CMD_OEM_1S_GET_POST_BUF,
                          tbuf, 0x03, rbuf, &rlen);
-
-  //Ignore IANA ID
-  memcpy(buf, &rbuf[3], rlen-3);
-
-  *len = rlen - 3;
+  if (ret == 0) {
+    //Ignore IANA ID
+    memcpy(buf, &rbuf[3], rlen-3);
+    *len = rlen - 3;
+  }
 
   return ret;
 }
@@ -708,6 +714,131 @@ i2c_io(int fd, uint8_t *tbuf, uint8_t tcount, uint8_t *rbuf, uint8_t rcount) {
 }
 
 static int
+prepare_update_bic(uint8_t slot_id, int ifd, int size) {
+  int i = 0;
+  char cmd[100] = {0};
+  uint8_t tbuf[256] = {0};
+  uint8_t rbuf[16] = {0};
+  uint8_t tcount;
+  uint8_t rcount;
+
+  /* Kill ipmb daemon for this slot */
+  sprintf(cmd, "sv stop ipmbd_0");
+  system(cmd);
+  printf("stop ipmbd\n");
+
+  sleep(1);
+  printf("Stopped ipmbd for this slot\n");
+
+  /* Restart ipmb daemon with "-u|--enable-bic-update" for bic update */
+  memset(cmd, 0, sizeof(cmd));
+  sprintf(cmd, "/usr/local/bin/ipmbd -u 0 1 > /dev/null 2>&1 &");
+  system(cmd);
+  printf("start ipmbd -u for minilake\n");
+
+  sleep(2);
+
+  /* Enable Bridge-IC update */
+  _enable_bic_update(slot_id);
+
+  /* Kill ipmb daemon "--enable-bic-update" for this slot */
+  memset(cmd, 0, sizeof(cmd));
+  sprintf(cmd, "ps | grep -v 'grep' | grep 'ipmbd -u 0' |awk '{print $1}' "
+               "| xargs kill");
+  system(cmd);
+  printf("stop ipmbd for minilake\n", slot_id);
+
+  // The I2C fast speed clock (400KHz) may cause to read BIC data abnormally.
+  // So reduce I2C bus clock speed which is a workaround for BIC update.
+  system("devmem 0x1e78a044 w 0xfff77304");
+
+  sleep(1);
+
+  /* Start Bridge IC update(0x21) */
+  tbuf[0] = CMD_DOWNLOAD_SIZE;
+  tbuf[1] = 0x00; // Checksum, will fill later
+  tbuf[2] = BIC_CMD_DOWNLOAD;
+
+  /* update flash address: 0x8000 */
+  tbuf[3] = (BIC_FLASH_START >> 24) & 0xff;
+  tbuf[4] = (BIC_FLASH_START >> 16) & 0xff;
+  tbuf[5] = (BIC_FLASH_START >> 8) & 0xff;
+  tbuf[6] = (BIC_FLASH_START) & 0xff;
+
+  /* image size */
+  tbuf[7] = (size >> 24) & 0xff;
+  tbuf[8] = (size >> 16) & 0xff;
+  tbuf[9] = (size >> 8) & 0xff;
+  tbuf[10] = (size) & 0xff;
+
+  /* calcualte checksum for data portion */
+  for (i = 2; i < CMD_DOWNLOAD_SIZE; i++) {
+    tbuf[1] += tbuf[i];
+  }
+
+  tcount = CMD_DOWNLOAD_SIZE;
+  rcount = 0;
+
+  if (i2c_io(ifd, tbuf, tcount, rbuf, rcount)) {
+    printf("i2c_io failed download\n");
+    return -1;
+  }
+  msleep(500); // delay for download command process
+
+  tcount = 0;
+  rcount = 2;
+  if (i2c_io(ifd, tbuf, tcount, rbuf, rcount)) {
+    printf("i2c_io failed download ack\n");
+    return -1;
+  }
+
+  if (rbuf[0] != 0x00 || rbuf[1] != 0xcc) {
+    printf("download response: %x:%x\n", rbuf[0], rbuf[1]);
+    return -1;
+  }
+
+  return 0;
+}
+
+static int
+update_bic_status(uint8_t slot_id, int ifd) {
+  uint8_t tbuf[256] = {0};
+  uint8_t rbuf[16] = {0};
+  uint8_t tcount;
+  uint8_t rcount;
+
+  /* Get Status */
+  tbuf[0] = CMD_STATUS_SIZE;
+  tbuf[1] = BIC_CMD_STATUS; // checksum same as data
+  tbuf[2] = BIC_CMD_STATUS;
+
+  tcount = CMD_STATUS_SIZE;
+  rcount = 0;
+
+  if (i2c_io(ifd, tbuf, tcount, rbuf, rcount)) {
+    printf("i2c_io failed get status\n");
+    return -1;
+  }
+
+  tcount = 0;
+  rcount = 5;
+
+  if (i2c_io(ifd, tbuf, tcount, rbuf, rcount)) {
+    printf("i2c_io failed get status ack\n");
+    return -1;
+  }
+
+  if (rbuf[0] != 0x00 || rbuf[1] != 0xcc || rbuf[2] != 0x03 ||
+      rbuf[3] != 0x40 || rbuf[4] != 0x40) {
+    printf("status resp: %x:%x:%x:%x:%x\n",
+            rbuf[0], rbuf[1], rbuf[2], rbuf[3], rbuf[4]);
+    return -1;
+  }
+
+  return 0;
+}
+
+static int
 _update_bic_main(uint8_t slot_id, char *path) {
   int fd;
   int ifd = -1;
@@ -719,7 +850,7 @@ _update_bic_main(uint8_t slot_id, char *path) {
   uint8_t tcount;
   uint8_t rcount;
   volatile int xcount;
-  int i = 0;
+  int i = 0, retry = 5;
   int ret = -1, rc;
   uint8_t xbuf[256] = {0};
   uint32_t offset = 0, last_offset = 0, dsize;
@@ -745,118 +876,21 @@ _update_bic_main(uint8_t slot_id, char *path) {
     goto error_exit;
   }
 
-  // Kill ipmb daemon for this slot
-  sprintf(cmd, "sv stop ipmbd");
-  system(cmd);
-  printf("stop ipmbd\n");
-
-  sleep(1);
-  printf("Stopped ipmbd for this slot\n");
-
-  // Restart ipmb daemon with "bicup" for bic update
-  memset(cmd, 0, sizeof(cmd));
-  sprintf(cmd, "/usr/local/bin/ipmbd 0 1 bicup > /dev/null 2>&1 &");
-  system(cmd);
-  printf("start ipmbd bicup for minilake\n");
-
-  sleep(2);
-
-  // Enable Bridge-IC update
-  _enable_bic_update(slot_id);
-
-  // Kill ipmb daemon "bicup" for this slot
-  memset(cmd, 0, sizeof(cmd));
-  sprintf(cmd, "killall ipmbd");
-  system(cmd);
-  printf("stop ipmbd for minilake\n", slot_id);
-
-  // The I2C high speed clock (1M) could cause to read BIC data abnormally.
-  // So reduce I2C bus clock speed which is a workaround for BIC update.
-  system("devmem 0x1e78a044 w 0xfff77304");
-
-  sleep(1);
-
-  // Start Bridge IC update(0x21)
-
-  tbuf[0] = CMD_DOWNLOAD_SIZE;
-  tbuf[1] = 0x00; //Checksum, will fill later
-
-  tbuf[2] = BIC_CMD_DOWNLOAD;
-
-  // update flash address: 0x8000
-  tbuf[3] = (BIC_FLASH_START >> 24) & 0xff;
-  tbuf[4] = (BIC_FLASH_START >> 16) & 0xff;
-  tbuf[5] = (BIC_FLASH_START >> 8) & 0xff;
-  tbuf[6] = (BIC_FLASH_START) & 0xff;
-
-  // image size
-  tbuf[7] = (size >> 24) & 0xff;
-  tbuf[8] = (size >> 16) & 0xff;
-  tbuf[9] = (size >> 8) & 0xff;
-  tbuf[10] = (size) & 0xff;
-
-  // calcualte checksum for data portion
-  for (i = 2; i < CMD_DOWNLOAD_SIZE; i++) {
-    tbuf[1] += tbuf[i];
-  }
-
-  tcount = CMD_DOWNLOAD_SIZE;
-
-  rcount = 0;
-
-  rc = i2c_io(ifd, tbuf, tcount, rbuf, rcount);
-  if (rc) {
-    printf("i2c_io failed download\n");
-    goto error_exit;
-  }
-
-  //delay for download command process ---
-  msleep(500);
-  tcount = 0;
-  rcount = 2;
-  rc = i2c_io(ifd, tbuf, tcount, rbuf, rcount);
-  if (rc) {
-    printf("i2c_io failed download ack\n");
-    goto error_exit;
-  }
-
-  if (rbuf[0] != 0x00 || rbuf[1] != 0xcc) {
-    printf("download response: %x:%x\n", rbuf[0], rbuf[1]);
+  if (prepare_update_bic(slot_id, ifd, size)) {
     goto error_exit;
   }
 
   // Loop to send all the image data
   while (1) {
-    // Get Status
-    tbuf[0] = CMD_STATUS_SIZE;
-    tbuf[1] = BIC_CMD_STATUS;// checksum same as data
-    tbuf[2] = BIC_CMD_STATUS;
-
-    tcount = CMD_STATUS_SIZE;
-    rcount = 0;
-
-    rc = i2c_io(ifd, tbuf, tcount, rbuf, rcount);
-    if (rc) {
-      printf("i2c_io failed get status\n");
-      goto error_exit;
+    /* Sometimes BIC update status get fail, so add retry for workaround */
+    while ((rc = update_bic_status(slot_id, ifd)) != 0 && retry--) {
+      printf("update_bic, BIC status get fail retrying ...\n");
+      offset = 0;
+      last_offset = 0;
+      lseek(fd, 0, SEEK_SET);
+      prepare_update_bic(slot_id, ifd, size);
     }
-
-    tcount = 0;
-    rcount = 5;
-
-    rc = i2c_io(ifd, tbuf, tcount, rbuf, rcount);
     if (rc) {
-      printf("i2c_io failed get status ack\n");
-      goto error_exit;
-    }
-
-    if (rbuf[0] != 0x00 ||
-        rbuf[1] != 0xcc ||
-        rbuf[2] != 0x03 ||
-        rbuf[3] != 0x40 ||
-        rbuf[4] != 0x40) {
-      printf("status resp: %x:%x:%x:%x:%x", 
-              rbuf[0], rbuf[1], rbuf[2], rbuf[3], rbuf[4]);
       goto error_exit;
     }
 
@@ -871,7 +905,6 @@ _update_bic_main(uint8_t slot_id, char *path) {
     }
 
     // send next packet
-
     xcount = read(fd, xbuf, BIC_PKT_MAX);
     if (xcount <= 0) {
 #ifdef DEBUG
@@ -964,13 +997,13 @@ _update_bic_main(uint8_t slot_id, char *path) {
 update_done:
   ret = 0;
 
-  // Restore the I2C bus clock to 1M.
-  system("devmem 0x1e78a044 w 0xfff77300");
+  // Restore the I2C bus clock to 400KHz.
+  system("devmem 0x1e78a044 w 0xfff77302");
 
   // Restart ipmbd daemon
   sleep(1);
   memset(cmd, 0, sizeof(cmd));
-  sprintf(cmd, "sv start ipmbd");
+  sprintf(cmd, "sv start ipmbd_0");
   system(cmd);
 
 error_exit:
@@ -1267,7 +1300,7 @@ bic_update_fw(uint8_t slot_id, uint8_t comp, char *path) {
            printf("updated cpld: %d %%\n", offset/dsize*5);
            break;
          case UPDATE_VR:
-           printf("\rupdated vr: %d %%", offset/dsize*20);
+           printf("updated vr: %d %%\n", offset/dsize*20);
            break;
          default:
            printf("updated bic boot loader: %d %%\n", offset/dsize*5);
@@ -1378,4 +1411,52 @@ bic_get_fw_ver(uint8_t slot_id, uint8_t comp, uint8_t *ver) {
   memcpy(ver, &rbuf[3], rlen-3);
 
   return ret;
+}
+
+int
+bic_get_self_test_result(uint8_t slot_id, uint8_t *self_test_result) {
+  int ret;
+  uint8_t rlen = 0;
+
+  ret = bic_ipmb_wrapper(slot_id, NETFN_APP_REQ, CMD_APP_GET_SELFTEST_RESULTS,
+                         NULL, 0, (uint8_t *) self_test_result, &rlen);
+
+  return ret;
+}
+
+int
+bic_me_xmit(uint8_t slot_id, uint8_t *txbuf, uint8_t txlen,
+            uint8_t *rxbuf, uint8_t *rxlen) {
+  uint8_t tbuf[256] = {0x15, 0xA0, 0x00}; // IANA ID
+  uint8_t rbuf[256] = {0x00};
+  uint8_t rlen = 0;
+  uint8_t tlen = 0;
+  int ret;
+
+  // Fill the interface number as ME
+  tbuf[3] = BIC_INTF_ME;
+
+  // Fill the data to be sent
+  memcpy(&tbuf[4], txbuf, txlen);
+
+  // Send data length includes IANA ID and interface number
+  tlen = txlen + 4;
+
+  ret = bic_ipmb_wrapper(slot_id, NETFN_OEM_1S_REQ, CMD_OEM_1S_MSG_OUT, tbuf, 
+                         tlen, rbuf, &rlen);
+  if (ret ) {
+    return -1;
+  }
+
+  // Make sure the received interface number is same
+  if (rbuf[3] != tbuf[3]) {
+    return -1;
+  }
+
+  // Copy the received data to caller skipping header
+  memcpy(rxbuf, &rbuf[6], rlen-6);
+
+  *rxlen = rlen-6;
+
+  return 0;
 }

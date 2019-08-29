@@ -31,7 +31,7 @@ function device_config() {
       i2c_remove_device $SLOT_B 0x40
 
       #if [ $(is_server_prsnt $(($SLOT_N+1))) == "1" ] && [ $(get_slot_type $(($SLOT_N+1))) == "0" ] ; then
-        if [ $(is_server_prsnt $SLOT_N) == "1" ] && [ $(get_slot_type $SLOT_N) != "0" ] ; then
+        if [ $(is_server_prsnt $SLOT_N) == "1" ] && [ $(get_slot_type $SLOT_N) != "0" ] && [ $(get_slot_type $SLOT_N) != "4" ] ; then
 
            devmem $I2C_REG w 0xFFF77304
 
@@ -129,8 +129,9 @@ SLOT_BUS=$(get_slot_bus $SLOT_NUM)
 case $OPTION in
     start)
       if [ $(is_server_prsnt $SLOT_NUM) == 0 ]; then
-         exit 1
+        exit 1
       fi
+      logger -p user.crit "Start to re-init for slot$SLOT_NUM insertion"
       echo "start to re-init for slot$SLOT_NUM insertion"
 
       # Delay 1 second for slot_type voltage ready
@@ -138,9 +139,12 @@ case $OPTION in
 
       # System Configuration
       echo "reset system configuration for $SLOT $OPTION"
-      /etc/init.d/setup-platform.sh
+      /usr/local/bin/check_slot_type.sh $SLOT
 
       # Remove Service for new device/server
+      # REST API
+      sv stop restapi
+
       # Sensor
       sv stop sensord
       rm -rf /tmp/cache_store/$SLOT*
@@ -159,31 +163,36 @@ case $OPTION in
       sleep 3
 
       # Restart Service for new device/server
-      echo "restart mTerm for $SLOT $OPTION"
-      if [[ $(is_server_prsnt $SLOT_NUM) == "1" && $(get_slot_type $SLOT_NUM) == "0" ]] ; then
-         sv start mTerm$SLOT_NUM
-      fi
+      if [[ $(is_server_prsnt $SLOT_NUM) == "1" ]]; then
+        if [[ $(get_slot_type $SLOT_NUM) == "0" || $(get_slot_type $SLOT_NUM) == "4" ]]; then
+          echo "restart mTerm for $SLOT $OPTION"
+          sv start mTerm$SLOT_NUM
 
-      echo "restart ipmbd for $SLOT $OPTION"
-      if [[ $(is_server_prsnt $SLOT_NUM) == "1" && $(get_slot_type $SLOT_NUM) == "0" ]]; then
-         sv start ipmbd_$SLOT_BUS
-         /usr/local/bin/bic-cached $SLOT_NUM > /dev/null 2>&1 &
+          echo "restart ipmbd for $SLOT $OPTION"
+          sv start ipmbd_$SLOT_BUS
+          rm -rf /tmp/fruid_$SLOT*
+          /usr/local/bin/bic-cached -s $SLOT_NUM > /dev/null 2>&1 &
+        fi
       fi
 
       # Server Type recognition restart
       echo "restart server type recognition for $SLOT"
-      /etc/init.d/setup-server-type.sh
-      
+      /usr/local/bin/check_server_type.sh $SLOT
+
       echo "restart gpiod for $SLOT $OPTION"
       sv start gpiod
 
       echo "restart sensord for $SLOT $OPTION"
-      sv start sensord 
+      sv start sensord
 
       echo "restart rest-api for $SLOT $OPTION"
-      ps | grep -v 'grep' | grep 'rest.py' |awk '{print $1}'| xargs kill
-      sh /usr/local/fbpackages/rest-api/setup-rest-api.sh
+      sv start restapi
 
+      if [ $(is_date_synced) == "0" ]; then
+        /usr/local/bin/sync_date.sh
+      fi
+
+      logger -p user.crit "Finish re-init for slot$SLOT_NUM insertion"
       ;;
     *)
       N=${0##*/}

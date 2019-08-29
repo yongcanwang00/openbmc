@@ -36,14 +36,6 @@ extern "C" {
 #define MAX_KEY_LEN     64
 #define MAX_NUM_FAN     2
 
-#define FRU_STATUS_GOOD   1
-#define FRU_STATUS_BAD    0
-
-#define SETBIT(x, y)        (x | (1LL << y))
-#define GETBIT(x, y)        ((x & (1LL << y)) > y)
-#define CLEARBIT(x, y)      (x & (~(1LL << y)))
-#define GETMASK(y)          (1LL << y)
-
 #define MAX_NODES 4
 
 #define MAX_NIC_TEMP_RETRY 3
@@ -59,18 +51,6 @@ extern const char pal_server_list[];
 enum {
   USB_MUX_OFF,
   USB_MUX_ON,
-};
-
-enum {
-  SERVER_POWER_OFF,
-  SERVER_POWER_ON,
-  SERVER_POWER_CYCLE,
-  SERVER_POWER_RESET,
-  SERVER_GRACEFUL_SHUTDOWN,
-  SERVER_12V_OFF,
-  SERVER_12V_ON,
-  SERVER_12V_CYCLE,
-  SERVER_GLOBAL_RESET,
 };
 
 enum {
