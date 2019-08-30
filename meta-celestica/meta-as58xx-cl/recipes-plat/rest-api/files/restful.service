@@ -1,0 +1,11 @@
+[Unit]
+Description=RESTful Service
+After=networking.service
+
+[Service]
+ExecStart=/usr/local/bin/rest.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+

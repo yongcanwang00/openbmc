@@ -1,0 +1,11 @@
+[Unit]
+Description=Platform Driver Init Service
+Before=systemd-logind.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/setup_platform.sh
+
+[Install]
+WantedBy=multi-user.target
+

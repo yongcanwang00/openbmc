@@ -1,0 +1,11 @@
+[Unit]
+Description=System Power Monitor Service
+After=platform.service
+
+[Service]
+ExecStart=/usr/local/bin/power_monitor.sh
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+

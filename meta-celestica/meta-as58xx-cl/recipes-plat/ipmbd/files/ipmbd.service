@@ -1,0 +1,10 @@
+[Unit]
+Description=System IPMBD Service
+
+[Service]
+ExecStart=/usr/local/bin/ipmbd 1 6
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=EMMC Mounting Service
+Before=platform.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mount_emmc.sh
+
+[Install]
+WantedBy=multi-user.target
+

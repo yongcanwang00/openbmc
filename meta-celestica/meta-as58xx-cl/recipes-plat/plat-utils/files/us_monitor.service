@@ -1,0 +1,12 @@
+[Unit]
+Description=COMe Status And Misc Monitor Service
+After=power-on.service
+
+[Service]
+ExecStart=/usr/local/bin/start_us_monitor.sh start
+ExecStop=/usr/local/bin/start_us_monitor.sh stop
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
