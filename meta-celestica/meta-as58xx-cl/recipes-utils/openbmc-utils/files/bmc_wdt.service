@@ -1,0 +1,12 @@
+[Unit]
+Description=BMC Watchdog Service
+After=systemd-logind.service
+
+[Service]
+Type=forking
+ExecStart=/sbin/watchdog -t 30 /dev/watchdog
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+

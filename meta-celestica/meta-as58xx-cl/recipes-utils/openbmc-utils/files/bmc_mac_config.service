@@ -1,0 +1,11 @@
+[Unit]
+Description=BMC MAC Configure Service
+After=power-on.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/config_bmc_mac.sh
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=COMe Power On Service
+After=platform.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/power-on.sh
+
+[Install]
+WantedBy=multi-user.target
+

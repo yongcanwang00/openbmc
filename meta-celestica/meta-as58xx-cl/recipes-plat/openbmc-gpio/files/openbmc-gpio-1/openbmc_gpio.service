@@ -1,0 +1,10 @@
+[Unit]
+Description=OpenBmc GPIO Service
+
+[Service]
+ExecStart=/usr/local/bin/openbmc_gpio_setup.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
