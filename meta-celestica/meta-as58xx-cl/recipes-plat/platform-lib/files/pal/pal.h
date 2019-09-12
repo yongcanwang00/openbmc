@@ -50,16 +50,6 @@ extern "C" {
 #define BOARD_TYPE_PATH "/sys/bus/i2c/devices/i2c-0/0-000d/hardware_version"
 #define FISHBONE  0x00
 #define PHALANX   0x03
-enum {
-  SERVER_POWER_OFF,
-  SERVER_POWER_ON,
-  SERVER_POWER_CYCLE,
-  SERVER_POWER_RESET,
-  SERVER_GRACEFUL_SHUTDOWN,
-  SERVER_12V_OFF,
-  SERVER_12V_ON,
-  SERVER_12V_CYCLE,
-};
 
 enum {
   FRU_ALL   = 0,
@@ -83,10 +73,6 @@ enum {
 };
 
 
-typedef struct _sensor_info_t {
-  bool valid;
-  sdr_full_t sdr;
-} sensor_info_t;
 
 #ifdef __cplusplus
 } // extern "C"

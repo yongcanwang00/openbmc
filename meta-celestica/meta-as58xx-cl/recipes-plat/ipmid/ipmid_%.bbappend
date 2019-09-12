@@ -15,19 +15,18 @@
 # 51 Franklin Street, Fifth Floor,
 # Boston, MA 02110-1301 USA
 
-DEPENDS_append = " libipmi libfruid update-rc.d-native"
+DEPENDS_append += " libipmi libfruid update-rc.d-native libpal"
 RDEPENDS_${PN} += "libipmi libfruid"
 
 FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
 SRC_URI += "file://ipmid.service \
            file://sensor.c \
-           file://fruid.c \
            file://lan.c \
           "
 
 S = "${WORKDIR}"
 
-CFLAGS_prepend = " -DDEBUG "
+CFLAGS_prepend = " -DDEBUG -Wno-unused-but-set-variable "
 inherit systemd
 SYSTEMD_SERVICE_${PN} = "ipmid.service"
 
