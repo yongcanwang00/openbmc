@@ -18,7 +18,7 @@
 TARGET   = eeprom_data
 OBJECTS := eeprom_data.o ezxml.o
 
-CFLAGS += -Wall -Werror
+CFLAGS += -Wall #-Werror
 
 .c.o:
 	$(CC) -c $(CFLAGS) $(INCPATH) -o $@ $<

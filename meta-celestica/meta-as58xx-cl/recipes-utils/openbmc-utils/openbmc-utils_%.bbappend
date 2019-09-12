@@ -30,7 +30,7 @@ do_install_append() {
 	pkgdir="/usr/local/fbpackages/utils"
     install -d ${D}${localbindir}
 	install -d ${D}${pkgdir}
-	ln -s "/usr/local/bin/openbmc-utils.sh" "${D}${pkgdir}/ast-functions"
+	#ln -s "/usr/local/bin/openbmc-utils.sh" "${D}${pkgdir}/ast-functions"
     install -d ${D}${systemd_unitdir}/system
 
 

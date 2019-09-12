@@ -34,5 +34,5 @@ do_install() {
 	install -m 0755 eeprom-bin ${D}${bindir}/eeprom-bin
 	install -m 0644 fru.conf.sample ${D}"/tmp"/fru.conf.sample
 }
-
+INSANE_SKIP_${PN} = "ldflags"
 FILES_${PN} = "${bindir} /tmp"

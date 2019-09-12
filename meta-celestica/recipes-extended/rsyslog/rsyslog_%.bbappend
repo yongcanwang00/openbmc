@@ -18,7 +18,7 @@ do_install_append() {
   install -m 644 ${WORKDIR}/rsyslog.conf ${D}${sysconfdir}/rsyslog.conf
   install -m 644 ${WORKDIR}/rsyslog.logrotate ${D}${sysconfdir}/logrotate.rsyslog
   install -m 755 ${WORKDIR}/rotate_console_log ${dst}/console_log
-  install -m 644 ${WORKDIR}/logrotate.conf ${D}${sysconfdir}/logrotate.conf
+  #install -m 644 ${WORKDIR}/logrotate.conf ${D}${sysconfdir}/logrotate.conf
 
   sed -i "s/__PLATFORM_NAME__/${MACHINE}/g;s/__OPENBMC_VERSION__/${OPENBMC_VERSION}/g" ${D}${sysconfdir}/rsyslog.conf
 
