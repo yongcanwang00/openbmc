@@ -37,6 +37,7 @@ SRC_URI += "file://get_fan_speed.sh \
             file://fand.service \
            "
 
+DEPENDS += " libobmc-i2c "
 S = "${WORKDIR}"
 inherit systemd
 SYSTEMD_SERVICE_${PN} = "fand.service"
